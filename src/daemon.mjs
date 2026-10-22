@@ -193,6 +193,9 @@ function shutdown() {
 }
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
+// one bad message or a locked file shouldn't take her down and cost you a "done" ping
+process.on("unhandledRejection", (err) => log("unhandled:", err));
+process.on("uncaughtException", (err) => log("uncaught:", err));
 
 server.on("error", (err) => {
   if (err.code === "EADDRINUSE") {
