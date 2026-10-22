@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { lastAssistantText, lastUserPrompt, readTail } from "../src/transcript.mjs";
-import { fmtDur, parseDuration } from "../src/util.mjs";
+import { fmtDur, inQuietHours, parseDuration } from "../src/util.mjs";
 
 const entries = [
   { type: "user", timestamp: "2026-10-22T10:00:00Z", message: { content: "old task" } },
@@ -41,4 +41,14 @@ test("durations read like a person would say them", () => {
   assert.equal(parseDuration("1h30m", 0), 5_400_000);
   assert.equal(parseDuration("45", 0), 2_700_000);
   assert.equal(parseDuration("", 99), 99);
+});
+
+test("quiet hours work across midnight", () => {
+  const at = (hhmm) => new Date(`2026-10-22T${hhmm}:00Z`);
+  const night = { from: "23:00", to: "08:00" };
+  assert.equal(inQuietHours(night, "UTC", at("23:30")), true);
+  assert.equal(inQuietHours(night, "UTC", at("07:59")), true);
+  assert.equal(inQuietHours(night, "UTC", at("08:00")), false);
+  assert.equal(inQuietHours({ from: "13:00", to: "14:00" }, "UTC", at("13:15")), true);
+  assert.equal(inQuietHours(null, "UTC", at("13:15")), false);
 });

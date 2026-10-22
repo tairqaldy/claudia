@@ -26,6 +26,13 @@ export function parseDuration(text, fallbackMs) {
   return total || fallbackMs;
 }
 
+// quiet = { from: "01:00", to: "09:00" }; windows can wrap past midnight
+export function inQuietHours(quiet, timeZone, date = new Date()) {
+  if (!quiet) return false;
+  const t = date.toLocaleTimeString("en-GB", { timeZone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+  return quiet.from < quiet.to ? t >= quiet.from && t < quiet.to : t >= quiet.from || t < quiet.to;
+}
+
 export function median(values) {
   const v = [...values].sort((a, b) => a - b);
   const mid = Math.floor(v.length / 2);

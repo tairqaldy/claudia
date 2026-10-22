@@ -47,7 +47,7 @@ Quick back-and-forth at the laptop stays quiet: anything that finishes in under 
 
 ## Talking to her
 
-Just text her. She knows which sessions are open, what they're working on, how long they've been at it, and what they said last. She keeps a small notebook about you: your projects, your preferences, things you asked her to remember. That way she isn't meeting you for the first time every day.
+Just text her. She knows which sessions are open, what they're working on, how long they've been at it, and what they said last. She keeps a small notebook about you: your projects, your preferences, things you asked her to remember. That way she isn't meeting you for the first time every day. Tell her "no sounds after 1am" and she sets quiet hours: pings still arrive, just silently.
 
 | Command | |
 | --- | --- |

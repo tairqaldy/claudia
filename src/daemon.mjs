@@ -6,7 +6,7 @@ import { createBrain, explainError } from "./brain.mjs";
 import { createMemory } from "./memory.mjs";
 import { Tracker } from "./sessions.mjs";
 import { createTelegram } from "./telegram.mjs";
-import { clip, parseDuration } from "./util.mjs";
+import { clip, inQuietHours, parseDuration } from "./util.mjs";
 
 const config = loadConfig();
 if (!config.telegramToken) {
@@ -46,14 +46,23 @@ const tracker = new Tracker({
   askDelayMs: config.askDelaySeconds * 1000,
   onError: (err) => log("tracker:", err),
 });
-const brain = createBrain({ config, memory, tracker, onError: (err) => log("brain:", err) });
+const prefs = {
+  quietHours: () => state.quietHours ?? null,
+  setQuietHours: (value) => {
+    state.quietHours = value;
+    save();
+  },
+  mutedUntil: () => state.mutedUntil ?? 0,
+};
+const brain = createBrain({ config, memory, tracker, prefs, onError: (err) => log("brain:", err) });
 const muted = () => Date.now() < (state.mutedUntil ?? 0);
+const hushed = () => muted() || inQuietHours(state.quietHours, config.timezone);
 const clock = (ms) => new Date(ms).toLocaleTimeString("en-GB", { timeZone: config.timezone, hour: "2-digit", minute: "2-digit" });
 
 async function notify(kind, session, extra = {}) {
   if (!config.chatId) return null;
   const { text, label } = await brain.ping(kind, session, extra);
-  const silent = kind === "start" || kind === "long" || muted();
+  const silent = kind === "start" || kind === "long" || hushed();
   const msg = await tg.send(config.chatId, text, { silent, replyTo: extra.replyTo });
   memory.addMessage("assistant", text);
   log(`ping ${kind} · ${session.project}`);

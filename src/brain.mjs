@@ -11,7 +11,7 @@ const PING_RULES = {
   hello: `You were just connected to their Telegram. Say hi in two or three short lines: who you are, that you'll text when a session starts something long, finishes or needs them, and that they can text you any time (/status gives a quick look).`,
   start: `A session has been working for a bit, and you're letting them know it's on it. Name the project and say in a few plain words what it's doing, based on the task. If a usual time is given, add it, like "usually ~12m here". One line. It arrives silently.
 Also give the task a label of 2 to 5 lowercase words, without the project name.`,
-  done: `A session just stopped. Read its final message and lead with one or two words for what happened: done, needs you (it asked a question or wants a decision, review or approval), or stuck (it hit a problem). Then give the gist in plain words, plus anything they have to do. End with how long it took, like "took 14m". At most 3 short lines and 300 characters. No code, and no file paths unless they matter.`,
+  done: `A session just stopped. Read its final message and lead with exactly one of: "done" (finished, nothing needed), "needs you" (it asked a question or wants a decision, review or approval), or "stuck" (it hit a problem). Then give the gist in a few plain words, plus what they have to do, if anything. End with how long it took, like "took 14m". Two short lines at most, under 250 characters. No code, and no file paths unless they matter.`,
   ask: `A session is blocked until they answer. Start with the project and that it needs them, then the question or permission in a few words. One or two lines.`,
   long: `A task is running longer than usual. Say so calmly in one line, with how long it's been and the usual time if one is given.`,
   failed: `A session stopped because of an error, not because it finished. Say which project, that it hit an error, and what the error was in plain words. One or two lines.`,
@@ -46,6 +46,16 @@ const TOOLS = [
     },
   },
   {
+    name: "set_quiet_hours",
+    description:
+      "Set the daily hours when your pings arrive without sound. They still arrive, just silently. Use 24h local times like 01:00 and 09:00, or off: true to remove them.",
+    input_schema: {
+      type: "object",
+      properties: { from: { type: "string" }, to: { type: "string" }, off: { type: "boolean" } },
+      additionalProperties: false,
+    },
+  },
+  {
     name: "look_at_session",
     description:
       "Read a session's full current task and the latest thing it said. Use it when they ask what a session did, found, or is asking.",
@@ -58,7 +68,7 @@ const TOOLS = [
   },
 ];
 
-export function createBrain({ config, memory, tracker, onError = () => {} }) {
+export function createBrain({ config, memory, tracker, prefs, onError = () => {} }) {
   const client = config.anthropicKey
     ? new Anthropic({
         apiKey: config.anthropicKey,
@@ -124,11 +134,13 @@ export function createBrain({ config, memory, tracker, onError = () => {} }) {
 
   async function reply(userText) {
     if (!client) return "my brain isn't connected yet (no anthropic key in setup). /status still works though";
+    const quiet = prefs.quietHours();
     const system = [
       persona,
       `## right now\n${now()} (${config.timezone})`,
       `## sessions on the laptop\n${tracker.describe({ detail: true })}`,
       `## your notes\n${notes()}`,
+      `## sound\n${quiet ? `quiet hours ${quiet.from}–${quiet.to}: pings arrive silently then` : "no quiet hours set"}${prefs.mutedUntil() > Date.now() ? `; muted for now` : ""}`,
     ].join("\n\n");
     const messages = [...recentChat(), { role: "user", content: userText }];
 
@@ -160,6 +172,17 @@ export function createBrain({ config, memory, tracker, onError = () => {} }) {
       }
       case "forget":
         return memory.forget(input.id) ? "deleted" : `there's no note #${input.id}`;
+      case "set_quiet_hours": {
+        if (input.off) {
+          prefs.setQuietHours(null);
+          return "quiet hours removed";
+        }
+        const from = hhmm(input.from);
+        const to = hhmm(input.to);
+        if (!from || !to || from === to) return "need two different times like 01:00 and 09:00";
+        prefs.setQuietHours({ from, to });
+        return `quiet hours set: ${from}–${to}`;
+      }
       case "look_at_session": {
         const s = tracker.find(input.project);
         if (!s) return "no session like that in the last day";
@@ -182,6 +205,13 @@ export function explainError(err) {
   if (err instanceof Anthropic.APIConnectionError) return "can't reach anthropic right now. is the wifi ok?";
   if (err instanceof Anthropic.APIError) return `anthropic returned an error (${err.status}). try again in a bit?`;
   return "something broke on my side, sorry. check `npm run logs` on the laptop";
+}
+
+// "1:00", "01:00", "9" -> "01:00", "09:00"
+function hhmm(text) {
+  const m = String(text ?? "").trim().match(/^(\d{1,2})(?::(\d{2}))?$/);
+  if (!m || Number(m[1]) > 23 || Number(m[2] ?? 0) > 59) return null;
+  return `${m[1].padStart(2, "0")}:${m[2] ?? "00"}`;
 }
 
 function textOf(res) {
