@@ -184,6 +184,7 @@ export class Tracker {
     const replyTo = s.startMsgId;
     Object.assign(s, {
       status: background.length ? "background" : "idle",
+      failed,
       background,
       waitingFor: null,
       announced: false,
@@ -271,6 +272,27 @@ export class Tracker {
         return `- ${parts.join(" · ")}`;
       })
       .join("\n");
+  }
+
+  // Structured view for the Mini App. Timers tick on the phone from turnStart.
+  snapshot() {
+    return this.sessions().map((s) => ({
+      id: s.id,
+      title: s.label ?? s.project,
+      project: s.project,
+      cwd: s.cwd ?? null,
+      status: s.status === "idle" && s.failed ? "failed" : s.status,
+      turnStart: s.turnStart ?? null,
+      usualMs: this.usual(s.project),
+      lastActivity: this.transcripts.activity(s.transcript),
+      waitingFor: s.waitingFor ?? null,
+      waitingSince: s.waitingSince ?? null,
+      background: s.background ?? [],
+      prompt: s.prompt ?? "",
+      remote: Boolean(s.remote),
+      lastDone: s.lastDone ?? null,
+      lastEventAt: s.lastEventAt ?? null,
+    }));
   }
 
   find(query) {

@@ -65,6 +65,27 @@ Typing on the laptop again switches away mode off by itself, and so does `/back`
 
 This needs the `claude` CLI on the laptop to be logged in. If it isn't, she'll tell you to run `claude` and then `/login` once.
 
+## The Mini App
+
+Tap **claudia** (the menu button in her chat), or send `/app`. You get four screens:
+
+- **Sessions:** what's working with live timers against the usual time, anything that needs you with answer buttons, and what finished lately.
+- **Session:** the conversation so far, shortcut chips and a reply box.
+- **Start something:** pick a project, tap a shortcut or describe the task, then run it. Face ID confirms first.
+- **Laptop:** battery, CPU, memory, keep-awake, leftover node processes you can stop, and a screenshot sent to your chat.
+
+It follows Telegram's light or dark theme, uses Telegram's back button and haptics, and updates live.
+
+**How it reaches your laptop:** the daemon serves the app on its own local port (`appPort`, 47834 by default), separate from the hook port. A [Cloudflare quick tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/do-more-with-tunnels/trycloudflare/) gives it the public https address Telegram requires, and Claudia points her menu button at it on every start.
+
+- Install `cloudflared` once: `winget install Cloudflare.cloudflared`, or `brew install cloudflared` on a Mac.
+- Every API call must carry Telegram's signed `initData` from your account; anything else gets a 401.
+- To use your own domain or a named tunnel, set `appUrl` in the config. Set `"miniApp": false` to turn it off.
+
+The built app is committed in `app/dist`. To change it, edit `app/src` and run `npm run build:app`. Adding `?mock` to the local URL shows the screens with sample data, no Telegram needed.
+
+The design system lives in the Paper file "Claudia Mini App": tokens, components, patterns, motion and the UX playbook.
+
 ## Shortcuts
 
 Shortcuts are small Markdown files in `recipes/`: Ship it, Test it, Review, Deploy, Polish UI, Optimize, Sync docs, Save summary and Continue. Put your own in `~/.claudia/recipes/` (the same key overrides a built-in one):
@@ -137,6 +158,9 @@ Claude Code hooks ──> src/hook.mjs ──> claudia daemon (127.0.0.1:47833) 
 | `learnHabits` | `true` | suggest shortcuts for things you keep asking for |
 | `autoKeepAwake` | `true` | keep the laptop awake while you're away and sessions work |
 | `claudePath` | found automatically | path to the `claude` CLI, if it isn't found |
+| `miniApp` | `true` | serve the Telegram Mini App |
+| `appPort` | `47834` | local port for the Mini App (only this port is tunneled) |
+| `appUrl` | | your own https address for the app, instead of a quick tunnel |
 
 ## Commands
 

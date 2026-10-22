@@ -8,7 +8,7 @@ import { clip } from "./util.mjs";
 const BUTTON_OPS = new Set(["r", "m", "x", "a", "s", "o", "pa", "pc", "ya", "yd"]);
 const ORPHAN_MS = 2 * 60_000; // a finished-session hold with no ping to reply to is let go
 
-export function createControl({ state, save, tg, config, tracker, recipes, log = () => {} }) {
+export function createControl({ state, save, tg, config, tracker, recipes, log = () => {}, onChange = () => {} }) {
   const holds = new Map();
   const chat = () => config.chatId;
   const nameOf = (h) => {
@@ -36,13 +36,14 @@ export function createControl({ state, save, tg, config, tracker, recipes, log =
 
   function open(ev, kind, send) {
     return new Promise((resolve) => {
-      const h = { id: randomBytes(4).toString("hex"), kind, ev, sessionId: ev.session_id, resolve };
+      const h = { id: randomBytes(4).toString("hex"), kind, ev, sessionId: ev.session_id, resolve, since: Date.now() };
       Object.assign(h, { messages: [], texts: {}, qMsg: [], answers: {}, picks: {}, awaiting: null });
       const timeout = kind === "stop" ? "↳ no reply, so it stopped there" : "↳ no answer here, so it's waiting on the laptop";
       h.timer = setTimeout(() => settle(h, {}, timeout), config.holdMinutes * 60_000);
       // the "done" ping is sent by the tracker and attached below; if it never comes, don't keep the session waiting
       if (kind === "stop") h.orphan = setTimeout(() => !h.messages.length && settle(h, {}), ORPHAN_MS);
       holds.set(h.id, h);
+      onChange();
       send?.(h).catch((err) => {
         log("control:", err);
         settle(h, {});
@@ -55,6 +56,7 @@ export function createControl({ state, save, tg, config, tracker, recipes, log =
     clearTimeout(h.timer);
     clearTimeout(h.orphan);
     h.resolve(output);
+    onChange();
     for (const m of h.messages) {
       if (note && h.texts[m]) tg.edit(chat(), m, `${h.texts[m]}\n\n${note}`);
       else tg.setButtons(chat(), m);
@@ -127,8 +129,11 @@ export function createControl({ state, save, tg, config, tracker, recipes, log =
     if (!q || !value) return;
     h.answers[q.question] = value;
     const m = h.qMsg[qi];
-    h.texts[m] = `${h.texts[m]}\n\n↳ ${value}`;
-    tg.edit(chat(), m, h.texts[m]);
+    if (m) {
+      h.texts[m] = `${h.texts[m]}\n\n↳ ${value}`;
+      tg.edit(chat(), m, h.texts[m]);
+    }
+    onChange();
     if (Object.keys(h.answers).length < questions.length) return;
     settle(h, {
       hookSpecificOutput: {
@@ -256,7 +261,65 @@ export function createControl({ state, save, tg, config, tracker, recipes, log =
 
   const release = (h) => settle(h, {});
 
-  return { away, setAway, decide, stopHold, attach, release, stopButtons, asking, onButton, onReply, continueSession, count: () => holds.size };
+  // ---- the Mini App sees the same holds and answers through the same paths as Telegram buttons
+
+  function list() {
+    return [...holds.values()].map((h) => ({
+      id: h.id,
+      kind: h.kind,
+      sessionId: h.sessionId,
+      since: h.since,
+      answers: h.answers,
+      questions:
+        h.kind === "ask"
+          ? questionsOf(h).map((q) => ({
+              question: q.question,
+              multiSelect: Boolean(q.multiSelect),
+              options: (q.options ?? []).map((o) => ({ label: o.label, description: o.description ?? "" })),
+            }))
+          : [],
+      text: h.kind === "plan" ? clip(h.ev.tool_input?.plan ?? "", 3000) : h.kind === "permission" ? describeTool(h.ev) : "",
+    }));
+  }
+
+  function act(holdId, action, value) {
+    const h = holds.get(holdId);
+    if (!h) return false;
+    const fits = { answer: "ask", reply: "stop", recipe: "stop", done: "stop", approve: "plan", change: "plan", allow: "permission", deny: "permission" };
+    if (fits[action] !== h.kind) return false;
+    switch (action) {
+      case "answer":
+        answer(h, Number(value?.q), Array.isArray(value?.value) ? value.value.join(", ") : String(value?.value ?? ""));
+        return true;
+      case "reply":
+        continueWith(h, clip(value, 4000));
+        return true;
+      case "recipe": {
+        const recipe = recipes().find((r) => r.key === value);
+        if (!recipe) return false;
+        continueWith(h, recipe.prompt, recipe.label);
+        return true;
+      }
+      case "done":
+        settle(h, {}, "↳ left it there");
+        return true;
+      case "approve":
+        settle(h, allowTool(h), "↳ approved");
+        return true;
+      case "change":
+        settle(h, changePlan(clip(value, 2000) || "make changes"), "↳ sent back with your changes");
+        return true;
+      case "allow":
+        settle(h, permission("allow"), "↳ allowed");
+        return true;
+      case "deny":
+        settle(h, permission("deny", value ? clip(value, 500) : undefined), "↳ denied");
+        return true;
+    }
+    return false;
+  }
+
+  return { away, setAway, decide, stopHold, attach, release, stopButtons, asking, onButton, onReply, continueSession, list, act, count: () => holds.size };
 }
 
 function describeTool(ev) {

@@ -25,6 +25,7 @@ const DEFAULTS = {
   digestTime: "10:00", // daily digest; "" turns it off
   learnHabits: true, // suggest shortcuts for things you keep asking for
   autoKeepAwake: true, // keep the laptop awake while you're away and sessions are working
+  miniApp: true, // the Telegram Mini App, served through a Cloudflare quick tunnel
 };
 
 export function readJson(path, fallback) {
@@ -54,6 +55,7 @@ export function loadConfig() {
     ...DEFAULTS,
     ...file,
     holdMinutes: Math.min(Math.max(Number(file.holdMinutes ?? DEFAULTS.holdMinutes), 1), 9), // hooks time out at 10m
+    appPort: Number(file.appPort ?? (file.port ?? DEFAULTS.port) + 1),
     telegramToken: env.CLAUDIA_TELEGRAM_TOKEN || file.telegramToken,
     anthropicKey: env.CLAUDIA_ANTHROPIC_KEY || file.anthropicKey,
     anthropicWorkspace: env.CLAUDIA_ANTHROPIC_WORKSPACE || file.anthropicWorkspace,

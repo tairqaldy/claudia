@@ -17,7 +17,8 @@
     "status": "node bin/claudia.mjs status",
     "logs": "node bin/claudia.mjs logs",
     "uninstall": "node bin/claudia.mjs uninstall",
-    "test": "node --test \"test/*.test.mjs\""
+    "test": "node --test \"test/*.test.mjs\"",
+    "build:app": "npm --prefix app install && npm --prefix app run build"
   },
   "engines": {
     "node": ">=22"

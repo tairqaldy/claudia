@@ -8,10 +8,13 @@ import { createBrain, explainError } from "./brain.mjs";
 import { createControl } from "./control.mjs";
 import * as laptop from "./laptop.mjs";
 import { createMemory } from "./memory.mjs";
+import { createAppServer } from "./miniapp.mjs";
 import { loadRecipes, saveRecipe } from "./recipes.mjs";
 import { createRunner } from "./runner.mjs";
 import { Tracker, displayName } from "./sessions.mjs";
 import { createTelegram } from "./telegram.mjs";
+import { readTail, timeline } from "./transcript.mjs";
+import { findCloudflared, startTunnel } from "./tunnel.mjs";
 import { clip, fmtDur, inQuietHours, parseDuration } from "./util.mjs";
 
 const config = loadConfig();
@@ -45,9 +48,11 @@ const tg = createTelegram(config.telegramToken);
 const memory = createMemory();
 const state = readJson(PATHS.state, {});
 let saveTimer = null;
+let app = null; // the Mini App server, once it's up
 const save = () => {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => writeJson(PATHS.state, state), 300);
+  app?.broadcast();
 };
 const chatId = () => config.chatId;
 const clock = (ms) => new Date(ms).toLocaleTimeString("en-GB", { timeZone: config.timezone, hour: "2-digit", minute: "2-digit" });
@@ -63,7 +68,7 @@ const tracker = new Tracker({
   forceLoud: (s) => control.away() || s.remote, // when you're not at the laptop, every finished turn matters
   onError: (err) => log("tracker:", err),
 });
-const control = createControl({ state, save, tg, config, tracker, recipes: loadRecipes, log });
+const control = createControl({ state, save, tg, config, tracker, recipes: loadRecipes, log, onChange: () => app?.broadcast() });
 const runner = createRunner({ config, log, onFinish: onRemoteFinish });
 const prefs = {
   quietHours: () => state.quietHours ?? null,
@@ -141,6 +146,10 @@ function setAway(on) {
 function continueSession(query, instruction) {
   const s = tracker.find(query);
   if (!s) return "no session like that in the last day";
+  return continueThis(s, instruction);
+}
+
+function continueThis(s, instruction) {
   if (control.continueSession(s.id, instruction)) return `sent to ${displayName(s)}, it's on it`;
   if (s.status === "working") return `${displayName(s)} is mid-task, so it can't take a new instruction until it stops`;
   const started = runner.run({ cwd: s.cwd, prompt: instruction, resume: s.id });
@@ -195,6 +204,10 @@ async function onUpdate(update) {
       return chooseProject();
     case "/laptop":
       return laptopPanel();
+    case "/app":
+      return state.appUrl
+        ? tg.send(chatId(), "here you go", { markup: { inline_keyboard: [[{ text: "open claudia", web_app: { url: state.appUrl } }]] } })
+        : tg.send(chatId(), "the app isn't reachable right now. check that cloudflared is installed, then npm run restart");
     case "/mute":
       state.mutedUntil = Date.now() + parseDuration(arg, 3_600_000);
       save();
@@ -445,6 +458,135 @@ async function answerHabit(yes, messageId) {
   await say(yes ? `saved. "${idea.label}" shows up on finished sessions now` : "ok, won't suggest that one again", { silent: true });
 }
 
+// ---- the Telegram Mini App
+
+let laptopInfo = { battery: null, cpu: null, mem: laptop.memory(), awakeUntil: 0 };
+let laptopTimer = null;
+let laptopTicks = 0;
+
+async function refreshLaptop() {
+  const withBattery = laptopTicks++ % 6 === 0; // battery needs PowerShell, so only once a minute
+  laptopInfo = {
+    battery: withBattery ? await laptop.battery().catch(() => null) : laptopInfo.battery,
+    cpu: await laptop.cpuPercent(300).catch(() => null),
+    mem: laptop.memory(),
+    awakeUntil: laptop.keepAwakeUntil(),
+  };
+  app?.broadcast();
+}
+
+const sessionById = (id) => tracker.state.sessions[id] ?? null;
+
+const appApi = {
+  async state() {
+    const today = localDate();
+    const done = (state.log ?? []).filter((e) => localDate(e.at) === today);
+    return {
+      now: Date.now(),
+      name: config.name,
+      away: control.away(),
+      muted: muted(),
+      sessions: tracker.snapshot(),
+      holds: control.list(),
+      doneToday: { count: done.length, totalMs: done.reduce((sum, e) => sum + e.took * 1000, 0) },
+      laptop: { ...laptopInfo, awakeUntil: laptop.keepAwakeUntil() },
+      projects: tracker.recentProjects(12),
+      recipes: loadRecipes().map(({ key, label, prompt }) => ({ key, label, prompt })),
+    };
+  },
+  async session(id) {
+    const s = sessionById(id);
+    if (!s) return { error: "that session is gone" };
+    return {
+      ...tracker.snapshot().find((x) => x.id === id),
+      timeline: timeline(readTail(s.transcript)),
+      hold: control.list().find((h) => h.sessionId === id && h.kind === "stop")?.id ?? null,
+    };
+  },
+  async processes() {
+    return { processes: (await laptop.nodeProcesses()).slice(0, 12) };
+  },
+  watching(count) {
+    if (count && !laptopTimer) {
+      laptopTicks = 0;
+      refreshLaptop().catch((err) => log("laptop:", err));
+      laptopTimer = setInterval(() => refreshLaptop().catch((err) => log("laptop:", err)), 10_000);
+    } else if (!count && laptopTimer) {
+      clearInterval(laptopTimer);
+      laptopTimer = null;
+    }
+  },
+  actions: {
+    away: ({ on }) => (setAway(Boolean(on)), { ok: true }),
+    hold: ({ id, action, value }) => (control.act(String(id), String(action), value) ? { ok: true } : { error: "that one's already settled" }),
+    reply({ sessionId, text }) {
+      const s = sessionById(sessionId);
+      if (!s || !String(text ?? "").trim()) return { error: "nothing to send" };
+      return { ok: true, message: continueThis(s, clip(text, 4000)) };
+    },
+    recipe({ sessionId, key }) {
+      const s = sessionById(sessionId);
+      const recipe = loadRecipes().find((r) => r.key === key);
+      if (!s || !recipe) return { error: "unknown shortcut" };
+      return { ok: true, message: continueThis(s, recipe.prompt) };
+    },
+    task({ cwd, prompt, careful = true }) {
+      // only folders Claude Code has actually worked in, never an arbitrary path from the network
+      const project = tracker.recentProjects(30).find((p) => p.cwd === cwd);
+      if (!project || !String(prompt ?? "").trim()) return { error: "pick a project and describe the task" };
+      const started = runner.run({ cwd, prompt: clip(prompt, 8000), permissionMode: careful ? config.remotePermissionMode : "bypassPermissions" });
+      return started.ok ? { ok: true, message: `started in ${project.name}` } : { error: started.error };
+    },
+    async laptop({ action, pid }) {
+      if (action === "awake") laptop.keepAwake(120);
+      else if (action === "sleep") laptop.stopKeepAwake();
+      else if (action === "shot") {
+        const file = join(HOME, "inbox", `screen-${Date.now()}.jpg`);
+        mkdirSync(join(HOME, "inbox"), { recursive: true });
+        try {
+          await laptop.screenshot(file);
+          await tg.sendPhoto(chatId(), file, `screen at ${clock(Date.now())}`);
+        } finally {
+          rmSync(file, { force: true });
+        }
+        return { ok: true, message: "sent to your chat" };
+      } else if (action === "kill") {
+        // only a node process that's in the current list, and never this daemon
+        const known = (await laptop.nodeProcesses()).some((p) => p.pid === Number(pid));
+        if (!known || !laptop.killProcess(Number(pid))) return { error: "couldn't stop it, it may already be gone" };
+      } else return { error: "unknown action" };
+      await refreshLaptop();
+      return { ok: true };
+    },
+  },
+};
+
+async function startApp() {
+  if (config.miniApp === false) return;
+  app = createAppServer({ config, api: appApi, log });
+  try {
+    await app.listen(config.appPort);
+  } catch (err) {
+    app = null;
+    return log(`mini app: can't listen on ${config.appPort}:`, err);
+  }
+  log(`mini app on 127.0.0.1:${config.appPort}`);
+  const pointMenuAt = async (url) => {
+    state.appUrl = url;
+    save();
+    if (chatId()) {
+      await tg
+        .call("setChatMenuButton", { chat_id: chatId(), menu_button: { type: "web_app", text: "claudia", web_app: { url } } })
+        .catch((err) => log("menu button:", err));
+    }
+    log(`mini app is at ${url}`);
+  };
+  if (config.appUrl) return pointMenuAt(config.appUrl); // your own domain or named tunnel
+  const bin = findCloudflared(config);
+  if (!bin) return log("mini app: cloudflared not found, so it's only reachable on this laptop");
+  startTunnel({ bin, port: config.appPort, onUrl: pointMenuAt, log });
+}
+
 const every = (ms, fn) => setInterval(() => fn().catch((err) => log("timer:", err)), ms).unref();
 every(60_000, async () => keepAwakeIfNeeded());
 every(180_000, checkBattery);
@@ -531,4 +673,5 @@ server.listen(config.port, "127.0.0.1", async () => {
     log("telegram:", err);
   }
   tg.poll(onUpdate, (err) => log("telegram:", err));
+  startApp().catch((err) => log("mini app:", err));
 });

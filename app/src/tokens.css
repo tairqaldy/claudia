@@ -1,0 +1,501 @@
+/* Claudia design system — tokens straight from the Paper file "Claudia Mini App". */
+:root {
+  --color-bg: #fdfbf9;
+  --color-surface: #f7efe9;
+  --color-surface-2: #f0e6dd;
+  --color-border: #e8e1da;
+  --color-stroke: #171717;
+  --color-text: #171717;
+  --color-heading: #2b1a07;
+  --color-text-2: #6b6560;
+  --color-text-3: #9a938c;
+  --color-primary: #ff6f1e;
+  --color-primary-ink: #a8420a;
+  --color-primary-soft: #ffe6d6;
+  --color-success: #1f8a4c;
+  --color-success-soft: #ddf5e5;
+  --color-paused: #2563eb;
+  --color-paused-soft: #e3eeff;
+  --color-danger: #c2362b;
+  --color-danger-soft: #fbe4e1;
+  --color-sticker-sprout: #22c55e;
+  --color-sticker-sky: #3b82f6;
+  --color-sticker-bubblegum: #ff66cf;
+  --color-neutral-400: #c9c0b7;
+  --color-on-primary: #171717;
+  --color-fill-over: #a8420a; /* "turns ink" once a task runs past its usual time */
+  --color-toast: #171717;
+  --color-toast-text: #fdfbf9;
+
+  --font-display: "Fredoka", "Nunito", "Geist", system-ui, sans-serif;
+  --font-sans: "Geist", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-base: 15px;
+  --text-md: 16px;
+  --text-lg: 18px;
+  --text-xl: 20px;
+  --text-2xl: 22px;
+  --text-4xl: 40px;
+  --text-5xl: 46px;
+  --text-7xl: 104px;
+
+  --spacing-1: 4px;
+  --spacing-2: 8px;
+  --spacing-3: 12px;
+  --spacing-4: 16px;
+  --spacing-5: 20px;
+  --spacing-6: 24px;
+  --spacing-7: 28px;
+  --spacing-10: 40px;
+
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-pill: 20px;
+  --radius-full: 9999px;
+
+  --shadow-card: 0 2px 20px rgba(0, 0, 0, 0.06);
+  --shadow-button: 0 1px 2px rgba(0, 0, 0, 0.25);
+
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-enter: cubic-bezier(0.05, 0.7, 0.1, 1);
+  --ease-exit: cubic-bezier(0.3, 0, 1, 1);
+  --dur-instant: 80ms;
+  --dur-fast: 140ms;
+  --dur-base: 200ms;
+  --dur-emph: 280ms;
+
+  --safe-top: calc(var(--tg-safe-area-inset-top, 0px) + var(--tg-content-safe-area-inset-top, 0px));
+  --safe-bottom: calc(var(--tg-safe-area-inset-bottom, 0px) + var(--tg-content-safe-area-inset-bottom, 0px));
+}
+
+/* cocoa night: follows Telegram's dark theme */
+:root[data-theme="dark"] {
+  --color-bg: #16110c;
+  --color-surface: #211a13;
+  --color-surface-2: #2c2319;
+  --color-border: #3a2f24;
+  --color-stroke: #f7efe9;
+  --color-text: #f7efe9;
+  --color-heading: #fff4ea;
+  --color-text-2: #b5aaa0;
+  --color-text-3: #8a7f75;
+  --color-primary: #ff7a30;
+  --color-primary-ink: #ff9a5e;
+  --color-primary-soft: #3a2414;
+  --color-success: #4ccb7f;
+  --color-success-soft: #14291c;
+  --color-paused: #7aa7ff;
+  --color-paused-soft: #172137;
+  --color-danger: #ff7b6e;
+  --color-danger-soft: #34171a;
+  --color-neutral-400: #6b6058;
+  --color-fill-over: #f7efe9;
+  --color-toast: #f7efe9;
+  --color-toast-text: #16110c;
+  --shadow-card: 0 2px 20px rgba(0, 0, 0, 0.35);
+  --shadow-button: 0 1px 2px rgba(0, 0, 0, 0.6);
+}
+
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html,
+body {
+  margin: 0;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: 22px;
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior-y: none;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
+button:focus-visible,
+textarea:focus-visible,
+[role="switch"]:focus-visible,
+[role="radio"]:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 4px var(--color-primary-soft);
+}
+
+.app {
+  max-width: 480px;
+  margin: 0 auto;
+  min-height: 100vh;
+  min-height: var(--tg-viewport-stable-height, 100vh);
+  display: flex;
+  flex-direction: column;
+  padding-top: var(--safe-top);
+}
+
+.screen {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 0 var(--spacing-5);
+  padding-bottom: calc(var(--spacing-7) + var(--safe-bottom));
+}
+
+/* the claudia mark: her asterisk on an orange sticker, tilted −9° */
+.mark {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  background: var(--color-primary);
+  border: 2px solid var(--color-stroke);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transform: rotate(-9deg);
+  flex-shrink: 0;
+}
+
+/* ---- type */
+.label {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--color-text-2);
+}
+.headline {
+  font-family: var(--font-display);
+  font-size: var(--text-5xl);
+  line-height: 50px;
+  font-weight: 600;
+  color: var(--color-heading);
+  margin: 0;
+}
+.title {
+  font-family: var(--font-display);
+  font-size: var(--text-4xl);
+  line-height: 44px;
+  font-weight: 600;
+  color: var(--color-heading);
+  margin: 0;
+}
+.title.is-content {
+  font-family: var(--font-sans);
+  font-size: 28px;
+  line-height: 34px;
+  font-weight: 500;
+}
+.section {
+  font-family: var(--font-display);
+  font-size: var(--text-xl);
+  line-height: 24px;
+  font-weight: 500;
+  color: var(--color-heading);
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-2);
+}
+.caption {
+  font-family: var(--font-display);
+  font-size: var(--text-xl);
+  color: var(--color-primary);
+  transform: rotate(-3deg);
+  white-space: nowrap;
+}
+.meta {
+  font-size: var(--text-sm);
+  line-height: 18px;
+  color: var(--color-text-2);
+}
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- actions */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 9px 28px;
+  border-radius: var(--radius-pill);
+  border: 1.5px solid var(--color-stroke);
+  background: var(--color-bg);
+  font-family: var(--font-display);
+  font-size: 17px;
+  font-weight: 500;
+  color: var(--color-text);
+  white-space: nowrap;
+}
+.pill.is-main {
+  box-shadow: var(--shadow-button);
+}
+.pill.is-done {
+  border-color: var(--color-success);
+  background: var(--color-success-soft);
+  color: var(--color-success);
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 38px;
+  padding: 7px 18px;
+  border-radius: var(--radius-pill);
+  border: 1.5px solid var(--color-stroke);
+  background: var(--color-bg);
+  font-family: var(--font-display);
+  font-size: var(--text-md);
+  font-weight: 500;
+  white-space: nowrap;
+  position: relative;
+}
+.chip::after {
+  /* 44px hit area around a 38px chip */
+  content: "";
+  position: absolute;
+  inset: -3px;
+}
+.chip.is-on {
+  background: var(--color-surface);
+}
+.chip.is-picked {
+  background: var(--color-primary-soft);
+}
+.chip.is-deny {
+  border-color: var(--color-danger);
+  color: var(--color-danger);
+}
+.ghost {
+  min-height: 38px;
+  padding: 7px 12px;
+  font-family: var(--font-display);
+  font-size: var(--text-md);
+  color: var(--color-text-2);
+}
+.link {
+  font-size: var(--text-sm);
+  color: var(--color-text-2);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 44px;
+}
+
+/* ---- surfaces */
+.card {
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-stroke);
+  background: var(--color-bg);
+  box-shadow: var(--shadow-card);
+}
+.row {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--color-border);
+  text-align: left;
+  width: 100%;
+}
+.row:last-child {
+  border-bottom: 0;
+}
+.row-title {
+  font-size: var(--text-md);
+  line-height: 22px;
+  font-weight: 500;
+  color: var(--color-text);
+}
+.status {
+  flex-shrink: 0;
+  padding: 3px 12px;
+  border-radius: var(--radius-pill);
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 500;
+}
+.status.done { background: var(--color-success-soft); color: var(--color-success); }
+.status.paused { background: var(--color-paused-soft); color: var(--color-paused); }
+.status.failed { background: var(--color-danger-soft); color: var(--color-danger); }
+.status.needs { background: var(--color-primary-soft); color: var(--color-primary-ink); }
+
+.track {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--color-surface);
+  overflow: hidden;
+}
+.fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--color-primary);
+  transition: width 1s linear, background-color var(--dur-base) var(--ease-standard);
+}
+.fill.is-over { background: var(--color-fill-over); }
+.fill.is-quiet { background: var(--color-neutral-400); }
+
+.bubble {
+  align-self: flex-end;
+  max-width: 290px;
+  padding: 12px 16px;
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  line-height: 22px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.claude {
+  padding: 16px;
+  line-height: 23px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.claude.is-old {
+  border: 0;
+  box-shadow: none;
+  padding: 0 2px;
+  color: var(--color-text-2);
+}
+
+.composer {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  padding: 6px 6px 6px 18px;
+  border-radius: var(--radius-pill);
+  border: 1.5px solid var(--color-stroke);
+  background: var(--color-bg);
+  transition: box-shadow var(--dur-fast) var(--ease-standard);
+}
+.composer:focus-within { box-shadow: 0 0 0 4px var(--color-primary-soft); }
+.composer textarea,
+.field {
+  flex: 1;
+  border: 0;
+  outline: 0;
+  resize: none;
+  background: transparent;
+  font: inherit;
+  color: var(--color-text);
+  line-height: 22px;
+  padding: 8px 0;
+  max-height: 132px;
+}
+.composer textarea::placeholder,
+.field::placeholder { color: var(--color-text-3); }
+.field {
+  min-height: 96px;
+  padding: 14px 16px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-stroke);
+  max-height: none;
+  width: 100%;
+}
+.field:focus { box-shadow: 0 0 0 4px var(--color-primary-soft); }
+.send {
+  width: 38px;
+  height: 38px;
+  flex-shrink: 0;
+  border-radius: var(--radius-full);
+  background: var(--color-primary);
+  border: 1.5px solid var(--color-stroke);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-on-primary);
+}
+
+.toggle {
+  width: 46px;
+  height: 28px;
+  flex-shrink: 0;
+  border-radius: 14px;
+  border: 1.5px solid var(--color-stroke);
+  padding: 3px;
+  display: flex;
+  background: var(--color-bg);
+  transition: background-color var(--dur-fast) var(--ease-standard);
+}
+.toggle.is-on { background: var(--color-primary); justify-content: flex-end; }
+.knob {
+  width: 20px;
+  height: 20px;
+  border-radius: 10px;
+  background: var(--color-bg);
+  border: 1.5px solid var(--color-stroke);
+}
+.radio {
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  border-radius: 11px;
+  border: 1.5px solid var(--color-stroke);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.radio-dot { width: 12px; height: 12px; border-radius: 6px; background: var(--color-primary); }
+
+.gauge {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-stroke);
+}
+.gauge-value {
+  font-family: var(--font-display);
+  font-size: 32px;
+  line-height: 34px;
+  font-weight: 600;
+  color: var(--color-heading);
+  font-variant-numeric: tabular-nums;
+}
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: calc(24px + var(--safe-bottom));
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 18px;
+  border-radius: var(--radius-pill);
+  background: var(--color-toast);
+  color: var(--color-toast-text);
+  font-size: 14px;
+  z-index: 10;
+  max-width: calc(100vw - 40px);
+}
+
+.skeleton {
+  border-radius: 7px;
+  background: linear-gradient(90deg, var(--color-surface) 0%, var(--color-surface-2) 50%, var(--color-surface) 100%);
+  background-size: 200% 100%;
+  animation: shimmer 1.6s linear infinite;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+@keyframes shimmer {
+  from { background-position: 100% 0; }
+  to { background-position: -100% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .skeleton { animation: none; }
+  .fill { transition: none; }
+}

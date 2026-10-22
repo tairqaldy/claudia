@@ -17,10 +17,10 @@ export function claudeBin(config) {
 export function createRunner({ config, onFinish = () => {}, log = () => {} }) {
   const running = new Set();
 
-  function run({ cwd, prompt, resume = null }) {
+  function run({ cwd, prompt, resume = null, permissionMode = config.remotePermissionMode }) {
     if (running.size >= MAX_RUNNING) return { ok: false, error: `${MAX_RUNNING} remote tasks are already running` };
     if (!cwd || !existsSync(cwd)) return { ok: false, error: `can't find the folder ${cwd}` };
-    const args = ["-p", prompt, "--output-format", "stream-json", "--verbose", "--permission-mode", config.remotePermissionMode];
+    const args = ["-p", prompt, "--output-format", "stream-json", "--verbose", "--permission-mode", permissionMode];
     if (resume) args.push("--resume", resume);
 
     const child = spawn(claudeBin(config), args, {
