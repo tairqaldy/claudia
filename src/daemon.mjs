@@ -1,12 +1,18 @@
 #!/usr/bin/env node
 // Claudia's daemon: one small process that hears Claude Code hooks and talks to you on Telegram.
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
-import { PATHS, loadConfig, log, readJson, saveConfig, writeJson } from "./config.mjs";
+import { join } from "node:path";
+import { HOME, PATHS, loadConfig, log, readJson, saveConfig, writeJson } from "./config.mjs";
 import { createBrain, explainError } from "./brain.mjs";
+import { createControl } from "./control.mjs";
+import * as laptop from "./laptop.mjs";
 import { createMemory } from "./memory.mjs";
-import { Tracker } from "./sessions.mjs";
+import { loadRecipes, saveRecipe } from "./recipes.mjs";
+import { createRunner } from "./runner.mjs";
+import { Tracker, displayName } from "./sessions.mjs";
 import { createTelegram } from "./telegram.mjs";
-import { clip, inQuietHours, parseDuration } from "./util.mjs";
+import { clip, fmtDur, inQuietHours, parseDuration } from "./util.mjs";
 
 const config = loadConfig();
 if (!config.telegramToken) {
@@ -16,16 +22,22 @@ if (!config.telegramToken) {
 
 const COMMANDS = [
   { command: "status", description: "what's running right now" },
+  { command: "away", description: "sessions wait for you here" },
+  { command: "back", description: "you're at the laptop again" },
+  { command: "new", description: "start a task on the laptop" },
+  { command: "laptop", description: "battery, cpu, keep awake, screenshot" },
   { command: "mute", description: "no sounds for a while, e.g. /mute 2h" },
   { command: "unmute", description: "sounds back on" },
   { command: "notes", description: "what i remember about you" },
-  { command: "forget", description: "forget a note, e.g. /forget 3" },
 ];
 const HELP = `i text you when a claude code session starts something long, finishes, or needs you. "started" pings are silent, the rest make a sound.
 
+/away when you leave the laptop: finished sessions wait for your reply here, and their questions come as buttons
+/back when you're at the laptop again
+/new start a task in one of your projects
 /status what's running
+/laptop battery, keep awake, screenshot
 /mute 2h no sounds for a while
-/notes what i remember
 
 or just text me`;
 
@@ -37,6 +49,10 @@ const save = () => {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => writeJson(PATHS.state, state), 300);
 };
+const chatId = () => config.chatId;
+const clock = (ms) => new Date(ms).toLocaleTimeString("en-GB", { timeZone: config.timezone, hour: "2-digit", minute: "2-digit" });
+const muted = () => Date.now() < (state.mutedUntil ?? 0);
+const hushed = () => muted() || inQuietHours(state.quietHours, config.timezone);
 
 const tracker = new Tracker({
   state,
@@ -44,8 +60,11 @@ const tracker = new Tracker({
   notify,
   quietMs: config.quietSeconds * 1000,
   askDelayMs: config.askDelaySeconds * 1000,
+  forceLoud: (s) => control.away() || s.remote, // when you're not at the laptop, every finished turn matters
   onError: (err) => log("tracker:", err),
 });
+const control = createControl({ state, save, tg, config, tracker, recipes: loadRecipes, log });
+const runner = createRunner({ config, log, onFinish: onRemoteFinish });
 const prefs = {
   quietHours: () => state.quietHours ?? null,
   setQuietHours: (value) => {
@@ -54,80 +73,196 @@ const prefs = {
   },
   mutedUntil: () => state.mutedUntil ?? 0,
 };
-const brain = createBrain({ config, memory, tracker, prefs, onError: (err) => log("brain:", err) });
-const muted = () => Date.now() < (state.mutedUntil ?? 0);
-const hushed = () => muted() || inQuietHours(state.quietHours, config.timezone);
-const clock = (ms) => new Date(ms).toLocaleTimeString("en-GB", { timeZone: config.timezone, hour: "2-digit", minute: "2-digit" });
+const actions = {
+  away: control.away,
+  setAway,
+  projects: () => tracker.recentProjects(30).map((p) => p.name),
+  continueSession,
+  startTask,
+};
+const brain = createBrain({ config, memory, tracker, prefs, actions, onError: (err) => log("brain:", err) });
+
+// ---- pings
 
 async function notify(kind, session, extra = {}) {
-  if (!config.chatId) return null;
-  const { text, label } = await brain.ping(kind, session, extra);
+  if (!chatId()) return null;
+  if (kind === "ask" && control.asking(session.id)) return null; // it's already here as buttons
+  const hold = kind === "done" || kind === "paused" ? control.stopHold(session.id) : null;
+  let { text, label } = await brain.ping(kind, session, extra);
+  if (hold) text += "\n\n↩ reply to keep it going";
   const silent = kind === "start" || kind === "long" || hushed();
-  const msg = await tg.send(config.chatId, text, { silent, replyTo: extra.replyTo });
+  let msg;
+  try {
+    msg = await tg.send(chatId(), text, { silent, replyTo: extra.replyTo, markup: hold ? control.stopButtons(hold) : null });
+  } catch (err) {
+    if (hold) control.release(hold); // nothing to reply to, so the session shouldn't wait
+    throw err;
+  }
+  if (hold) control.attach(hold, msg.message_id, text);
   memory.addMessage("assistant", text);
   log(`ping ${kind} · ${session.project}`);
   return { messageId: msg.message_id, label };
 }
 
+const say = (text, opts) => (chatId() ? tg.send(chatId(), text, opts).catch((err) => log("telegram:", err)) : null);
+
+// ---- hook events
+
 // Events for one session are handled in order; different sessions don't wait on each other.
 const queues = new Map();
 function enqueue(ev) {
   const id = ev.session_id ?? "unknown";
-  const next = (queues.get(id) ?? Promise.resolve()).then(() => tracker.handle(ev)).catch((err) => log("event:", err));
+  const next = (queues.get(id) ?? Promise.resolve()).then(() => onEvent(ev)).catch((err) => log("event:", err));
   queues.set(id, next);
   next.then(() => queues.get(id) === next && queues.delete(id));
 }
 
+async function onEvent(ev) {
+  if (ev.hook_event_name === "UserPromptSubmit" && !ev.claudia_remote) {
+    // you typed on the laptop, so you're not away anymore
+    if (control.away()) {
+      setAway(false);
+      say("you're back at the laptop, so away mode is off", { silent: true });
+    }
+    if (config.learnHabits && ev.prompt) {
+      state.prompts = [...(state.prompts ?? []), { text: clip(ev.prompt, 500), project: ev.cwd?.split(/[\\/]/).pop(), at: Date.now() }].slice(-300);
+    }
+  }
+  await tracker.handle(ev);
+}
+
+function setAway(on) {
+  control.setAway(on);
+  if (on) keepAwakeIfNeeded();
+}
+
+// ---- acting on the laptop
+
+function continueSession(query, instruction) {
+  const s = tracker.find(query);
+  if (!s) return "no session like that in the last day";
+  if (control.continueSession(s.id, instruction)) return `sent to ${displayName(s)}, it's on it`;
+  if (s.status === "working") return `${displayName(s)} is mid-task, so it can't take a new instruction until it stops`;
+  const started = runner.run({ cwd: s.cwd, prompt: instruction, resume: s.id });
+  if (!started.ok) return `couldn't: ${started.error}`;
+  return `resumed ${displayName(s)} in the background. if it's open in the desktop app, reopen it there to see the new turn`;
+}
+
+function startTask(project, task) {
+  const q = project.toLowerCase();
+  const match = tracker.recentProjects(30).find((p) => p.name.toLowerCase() === q) ?? tracker.recentProjects(30).find((p) => p.name.toLowerCase().includes(q));
+  if (!match) return `no project called ${project} among the recent ones`;
+  const started = runner.run({ cwd: match.cwd, prompt: task });
+  return started.ok ? `started in ${match.name}. you'll get the usual pings, and it waits for you when it's done` : `couldn't start it: ${started.error}`;
+}
+
+function onRemoteFinish({ cwd, error, needsLogin }) {
+  if (!error) return; // the session's own hooks already pinged
+  const where = cwd.split(/[\\/]/).pop();
+  say(needsLogin ? `couldn't run it in ${where}: the claude cli on the laptop needs a login. open a terminal, run claude, then /login` : `the task in ${where} failed: ${error}`);
+}
+
+// ---- Telegram
+
 async function onUpdate(update) {
+  if (update.callback_query) return onButton(update.callback_query);
   const msg = update.message;
   if (!msg?.chat) return;
   const text = (msg.text ?? msg.caption ?? "").trim();
-  if (!config.chatId) return pair(msg, text);
-  if (msg.chat.id !== config.chatId) return; // she only talks to you
-  const chatId = config.chatId;
-  if (!text) return tg.send(chatId, "i can only read text for now");
+  if (!chatId()) return pair(msg, text);
+  if (msg.chat.id !== chatId()) return; // she only talks to you
+
+  if (msg.photo?.length) return onPhoto(msg, text);
+  if (!text) return tg.send(chatId(), "i can read text and photos for now");
+  if (newTask?.promptId && msg.reply_to_message?.message_id === newTask.promptId) return launchNew(text);
+  if (control.onReply(msg, text)) return;
 
   const [first, ...rest] = text.split(/\s+/);
   const arg = rest.join(" ");
   switch (first.split("@")[0].toLowerCase()) {
     case "/start":
     case "/help":
-      return tg.send(chatId, HELP);
+      return tg.send(chatId(), HELP);
     case "/status":
-      return tg.send(chatId, tracker.describe());
+      return tg.send(chatId(), `${control.away() ? "away mode on\n\n" : ""}${tracker.describe()}`);
+    case "/away":
+      setAway(true);
+      return tg.send(chatId(), `away mode on. finished sessions will wait up to ${config.holdMinutes}m for your reply here, and questions come as buttons. /back when you're at the laptop`);
+    case "/back":
+      setAway(false);
+      return tg.send(chatId(), "welcome back. nothing waits on your phone now");
+    case "/new":
+      return chooseProject();
+    case "/laptop":
+      return laptopPanel();
     case "/mute":
       state.mutedUntil = Date.now() + parseDuration(arg, 3_600_000);
       save();
-      return tg.send(chatId, `ok, no sounds until ${clock(state.mutedUntil)}. you'll still get messages, just quietly`);
+      return tg.send(chatId(), `ok, no sounds until ${clock(state.mutedUntil)}. you'll still get messages, just quietly`);
     case "/unmute":
       state.mutedUntil = 0;
       save();
-      return tg.send(chatId, "sound's back on");
+      return tg.send(chatId(), "sound's back on");
     case "/notes":
-      return tg.send(chatId, memory.notes().map((n) => `#${n.id} ${n.text}`).join("\n") || "my notebook's empty so far");
+      return tg.send(chatId(), memory.notes().map((n) => `#${n.id} ${n.text}`).join("\n") || "my notebook's empty so far");
     case "/forget":
-      return tg.send(chatId, memory.forget(arg.replace("#", "")) ? "gone" : "no note with that number. /notes shows them");
+      return tg.send(chatId(), memory.forget(arg.replace("#", "")) ? "gone" : "no note with that number. /notes shows them");
   }
   return chat(msg, text);
 }
 
-async function chat(msg, text) {
+async function chat(msg, text, images = []) {
   const quoted = msg.reply_to_message?.text;
   const input = quoted ? `(replying to: "${clip(quoted, 300)}")\n${text}` : text;
-  tg.typing(config.chatId);
-  const typing = setInterval(() => tg.typing(config.chatId), 4500);
+  tg.typing(chatId());
+  const typing = setInterval(() => tg.typing(chatId()), 4500);
   let answer;
   try {
-    answer = await brain.reply(input);
+    answer = await brain.reply(input, images);
   } catch (err) {
     log("chat:", err);
     answer = explainError(err);
   } finally {
     clearInterval(typing);
   }
-  memory.addMessage("user", input);
+  memory.addMessage("user", images.length ? `[photo] ${input}` : input);
   memory.addMessage("assistant", answer);
-  await tg.send(config.chatId, answer);
+  await tg.send(chatId(), answer);
+}
+
+async function onPhoto(msg, caption) {
+  const photo = msg.photo.at(-1); // largest size
+  const bytes = await tg.download(photo.file_id);
+  if (msg.reply_to_message && newTask?.promptId !== msg.reply_to_message.message_id) {
+    // a screenshot for a waiting session: save it where that session can read it
+    const dir = join(HOME, "inbox");
+    mkdirSync(dir, { recursive: true });
+    const file = join(dir, `${Date.now()}.jpg`);
+    writeFileSync(file, bytes);
+    if (control.onReply(msg, `${caption || "Take a look at this screenshot and fix what's wrong"} (screenshot from my phone: ${file})`)) return;
+    rmSync(file, { force: true });
+  }
+  return chat(msg, caption, [bytes.toString("base64")]);
+}
+
+async function onButton(q) {
+  if (q.from?.id !== chatId()) return tg.answerButton(q.id);
+  if (await control.onButton(q)) return;
+  const [op, a, b] = String(q.data ?? "").split(":");
+  await tg.answerButton(q.id);
+  const messageId = q.message?.message_id;
+  switch (op) {
+    case "nw":
+      return pickProject(Number(a), messageId);
+    case "nr": {
+      const recipe = loadRecipes().find((r) => r.key === a);
+      return recipe && launchNew(recipe.prompt, recipe.label);
+    }
+    case "lp":
+      return laptopAction(a, b, messageId);
+    case "hs":
+      return answerHabit(a === "yes", messageId);
+  }
 }
 
 // The first chat to send "/start <code>" (from the setup link) becomes the only chat she answers.
@@ -139,9 +274,183 @@ async function pair(msg, text) {
   saveConfig({ chatId: msg.chat.id, pairCode: null });
   log(`paired with chat ${msg.chat.id}`);
   const { text: hello } = await brain.ping("hello", { project: "" });
-  await tg.send(config.chatId, hello);
+  await tg.send(chatId(), hello);
   memory.addMessage("assistant", hello);
 }
+
+// ---- /new: start a task in a recent project
+
+let newTask = null;
+
+async function chooseProject() {
+  const projects = tracker.recentProjects(8);
+  if (!projects.length) return tg.send(chatId(), "i haven't seen any projects yet. open one in claude code once and it'll show up here");
+  newTask = { projects };
+  const buttons = projects.map((p, i) => ({ text: p.name, callback_data: `nw:${i}` }));
+  const rows = [];
+  for (let i = 0; i < buttons.length; i += 2) rows.push(buttons.slice(i, i + 2));
+  return tg.send(chatId(), "where should it run?", { markup: { inline_keyboard: rows } });
+}
+
+async function pickProject(i, messageId) {
+  const project = newTask?.projects?.[i];
+  if (!project) return;
+  newTask.cwd = project.cwd;
+  newTask.name = project.name;
+  const recipes = loadRecipes().filter((r) => r.key !== "continue").slice(0, 6);
+  const rows = [];
+  for (let j = 0; j < recipes.length; j += 3) rows.push(recipes.slice(j, j + 3).map((r) => ({ text: r.label, callback_data: `nr:${r.key}` })));
+  await tg.edit(chatId(), messageId, `in ${project.name}. pick a shortcut, or reply below with the task`, { inline_keyboard: rows });
+  const prompt = await tg.send(chatId(), `what should it do in ${project.name}?`, {
+    markup: { force_reply: true, input_field_placeholder: "describe the task" },
+  });
+  newTask.promptId = prompt.message_id;
+}
+
+async function launchNew(prompt, label = null) {
+  if (!newTask?.cwd) return;
+  const { cwd, name } = newTask;
+  newTask = null;
+  const started = runner.run({ cwd, prompt });
+  await say(started.ok ? `started ${label ? `"${label}" ` : ""}in ${name}. you'll get the usual pings, and it waits for you when it's done` : `couldn't start it: ${started.error}`);
+}
+
+// ---- /laptop
+
+async function laptopPanel() {
+  const [battery, cpu] = await Promise.all([laptop.battery().catch(() => null), laptop.cpuPercent().catch(() => null)]);
+  const mem = laptop.memory();
+  const awakeUntil = laptop.keepAwakeUntil();
+  const lines = [
+    battery ? `battery ${battery.percent}%${battery.onBattery ? ", on battery" : battery.charging ? ", charging" : ", plugged in"}` : "no battery (plugged in)",
+    `cpu ${cpu ?? "?"}% · memory ${mem.usedPct}% of ${mem.totalGb} GB`,
+    awakeUntil ? `keeping it awake until ${clock(awakeUntil)}` : "sleep: normal",
+    `${tracker.sessions().filter((s) => s.status === "working").length} sessions working · ${runner.count()} started from your phone`,
+  ];
+  return tg.send(chatId(), lines.join("\n"), { markup: laptopButtons() });
+}
+
+function laptopButtons() {
+  const awake = laptop.keepAwakeUntil()
+    ? { text: "Let it sleep", callback_data: "lp:sleep" }
+    : { text: "Keep awake 2h", callback_data: "lp:awake" };
+  return { inline_keyboard: [[{ text: "Screenshot", callback_data: "lp:shot" }, awake], [{ text: "Node processes", callback_data: "lp:procs" }]] };
+}
+
+async function laptopAction(action, arg, messageId) {
+  if (action === "shot") {
+    const file = join(HOME, "inbox", `screen-${Date.now()}.jpg`);
+    mkdirSync(join(HOME, "inbox"), { recursive: true });
+    try {
+      await laptop.screenshot(file);
+      await tg.sendPhoto(chatId(), file, `screen at ${clock(Date.now())}`);
+    } catch (err) {
+      await say(`couldn't take a screenshot: ${err.message}`);
+    } finally {
+      rmSync(file, { force: true });
+    }
+    return;
+  }
+  if (action === "awake" || action === "sleep") {
+    if (action === "awake") laptop.keepAwake(120);
+    else laptop.stopKeepAwake();
+    state.manualAwake = action === "awake";
+    return tg.setButtons(chatId(), messageId, laptopButtons());
+  }
+  if (action === "procs") {
+    const procs = (await laptop.nodeProcesses()).slice(0, 8);
+    if (!procs.length) return say("no node processes running besides me");
+    const lines = procs.map((p) => `${p.pid} · ${p.mb} MB · ${clip(p.command, 70)}`);
+    const rows = procs.map((p) => [{ text: `Stop ${p.pid} (${p.mb} MB)`, callback_data: `lp:kill:${p.pid}` }]);
+    return tg.send(chatId(), `node processes, biggest first:\n\n${lines.join("\n")}\n\nonly stop the ones you recognise`, { markup: { inline_keyboard: rows } });
+  }
+  if (action === "kill") {
+    const ok = laptop.killProcess(Number(arg));
+    return say(ok ? `stopped ${arg}` : `couldn't stop ${arg}, it may already be gone`, { silent: true });
+  }
+}
+
+// ---- background checks: keep awake while away, battery, daily digest
+
+function keepAwakeIfNeeded() {
+  const working = tracker.sessions().some((s) => s.status === "working" || s.status === "background");
+  if (config.autoKeepAwake && control.away() && working) laptop.keepAwake(15); // extended while it stays true
+}
+
+async function checkBattery() {
+  const working = tracker.sessions().filter((s) => s.status === "working");
+  if (!working.length && !control.away()) return;
+  const b = await laptop.battery().catch(() => null);
+  if (!b) return;
+  const alerts = (state.batteryAlerts ??= {});
+  if (!b.onBattery) {
+    state.batteryAlerts = {};
+    return;
+  }
+  if (!alerts.unplugged && working.length) {
+    alerts.unplugged = true;
+    await say(`heads up: the laptop's running on battery (${b.percent}%) with ${working.length} session${working.length > 1 ? "s" : ""} working`);
+  } else if (!alerts.low && b.percent <= 20) {
+    alerts.low = true;
+    await say(`laptop battery's at ${b.percent}%. plug it in or sessions stop when it dies`);
+  }
+  save();
+}
+
+const localDate = (ms = Date.now()) => new Date(ms).toLocaleDateString("en-CA", { timeZone: config.timezone });
+const localTime = () => new Date().toLocaleTimeString("en-GB", { timeZone: config.timezone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+
+async function dailyDigest() {
+  if (!config.digestTime || !chatId() || localTime() < config.digestTime || state.lastDigest === localDate()) return;
+  state.lastDigest = localDate();
+  save();
+  const since = Date.now() - 24 * 3_600_000;
+  const done = (state.log ?? []).filter((e) => e.at > since);
+  const open = tracker.sessions().filter((s) => s.status !== "idle");
+  const facts = [
+    `finished in the last 24h (${done.length}):`,
+    ...done.map((e) => `- ${e.label ? `${e.label} (${e.project})` : e.project}: ${fmtDur(e.took * 1000)}`),
+    `still open: ${open.map((s) => `${displayName(s)} (${s.status})`).join(", ") || "nothing"}`,
+  ].join("\n");
+  if (done.length || open.length) {
+    const { text } = await brain.ping("digest", {}, { facts });
+    await say(text, { silent: true });
+    memory.addMessage("assistant", text);
+  }
+  await suggestHabit();
+}
+
+async function suggestHabit() {
+  if (!config.learnHabits) return;
+  const recent = (state.prompts ?? []).filter((p) => p.at > Date.now() - 14 * 86_400_000);
+  const recipes = loadRecipes().map((r) => r.label);
+  const idea = await brain.suggestShortcut(recent, [...recipes, ...(state.declinedHabits ?? [])]);
+  if (!idea) return;
+  state.pendingHabit = idea;
+  save();
+  await say(`you've asked for something like "${idea.label}" about ${idea.times} times lately. want a shortcut button for it?\n\n${clip(idea.prompt, 600)}`, {
+    silent: true,
+    markup: { inline_keyboard: [[{ text: "Save shortcut", callback_data: "hs:yes" }, { text: "No thanks", callback_data: "hs:no" }]] },
+  });
+}
+
+async function answerHabit(yes, messageId) {
+  const idea = state.pendingHabit;
+  if (!idea) return tg.setButtons(chatId(), messageId);
+  delete state.pendingHabit;
+  if (yes) saveRecipe({ label: idea.label, prompt: idea.prompt });
+  else state.declinedHabits = [...(state.declinedHabits ?? []), idea.label].slice(-30);
+  save();
+  await tg.setButtons(chatId(), messageId);
+  await say(yes ? `saved. "${idea.label}" shows up on finished sessions now` : "ok, won't suggest that one again", { silent: true });
+}
+
+const every = (ms, fn) => setInterval(() => fn().catch((err) => log("timer:", err)), ms).unref();
+every(60_000, async () => keepAwakeIfNeeded());
+every(180_000, checkBattery);
+every(60_000, dailyDigest);
+
+// ---- local HTTP: hooks and the CLI talk to this
 
 const startedAt = Date.now();
 let bot = null;
@@ -152,7 +461,7 @@ const server = createServer((req, res) => {
     res.end(JSON.stringify(body));
   };
   if (req.method === "GET" && req.url === "/health") {
-    return reply(200, { ok: true, pid: process.pid, paired: Boolean(config.chatId), bot, startedAt });
+    return reply(200, { ok: true, pid: process.pid, paired: Boolean(chatId()), bot, startedAt, away: control.away() });
   }
   // a custom header can't be sent cross-origin without a preflight, so web pages can't poke this
   if (req.method !== "POST" || req.headers["x-claudia"] !== "1") return reply(404);
@@ -163,19 +472,26 @@ const server = createServer((req, res) => {
     if (body.length > 2_000_000) req.destroy();
   });
   req.on("end", async () => {
+    let ev = null;
+    try {
+      ev = JSON.parse(body || "{}");
+    } catch {}
     switch (req.url) {
-      case "/event": {
+      case "/event":
         reply(200); // answer right away; hooks shouldn't wait on Telegram or the model
-        try {
-          enqueue(JSON.parse(body));
-        } catch {}
+        if (ev) enqueue(ev);
         return;
+      case "/decide": {
+        // hooks that can carry an answer back: registered before the event is tracked, so a "done" ping can attach to it
+        const answer = ev ? control.decide(ev) : Promise.resolve({});
+        if (ev) enqueue(ev);
+        return reply(200, await answer);
       }
       case "/status":
-        return reply(200, { text: tracker.describe(), muted: muted() });
+        return reply(200, { text: tracker.describe(), muted: muted(), away: control.away() });
       case "/test":
-        if (!config.chatId) return reply(409, { error: "not paired yet" });
-        await tg.send(config.chatId, "test ping from the laptop. if you see this, we're good").catch((err) => log("test:", err));
+        if (!chatId()) return reply(409, { error: "not paired yet" });
+        await say("test ping from the laptop. if you see this, we're good");
         return reply(200);
       case "/stop":
         reply(200);

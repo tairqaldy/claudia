@@ -10,8 +10,12 @@ test("adds hooks without touching existing settings or hooks", () => {
   const after = withHooks(before, CMD);
   assert.equal(after.model, "opus");
   assert.deepEqual(after.hooks.Stop[0], { hooks: [theirs] });
-  assert.equal(after.hooks.Stop[1].hooks[0].command, CMD);
-  assert.equal(after.hooks.Stop[1].hooks[0].async, true);
+  // hooks that can carry your answer back from Telegram wait; the rest run in the background
+  assert.equal(after.hooks.Stop[1].hooks[0].command, `${CMD} --decide`);
+  assert.equal(after.hooks.Stop[1].hooks[0].async, undefined);
+  assert.equal(after.hooks.PermissionRequest[0].hooks[0].command, `${CMD} --decide`);
+  assert.equal(after.hooks.UserPromptSubmit[0].hooks[0].command, CMD);
+  assert.equal(after.hooks.UserPromptSubmit[0].hooks[0].async, true);
   assert.equal(after.hooks.PreToolUse[0].matcher, "AskUserQuestion|ExitPlanMode");
   assert.deepEqual(before.hooks.Stop, [{ hooks: [theirs] }], "input is not mutated");
 });

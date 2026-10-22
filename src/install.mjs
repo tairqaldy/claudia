@@ -7,15 +7,18 @@ import { ROOT, readJson, writeJson } from "./config.mjs";
 export const SETTINGS = join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"), "settings.json");
 const MARKER = "claudia-hook";
 const ASK_TOOLS = "AskUserQuestion|ExitPlanMode";
+// [event, matcher, waits]. Hooks that wait can carry your answer back from Telegram while you're
+// away; at the laptop Claudia answers them instantly. The rest run in the background.
 const EVENTS = [
   ["SessionStart"],
   ["UserPromptSubmit"],
   ["Notification"],
-  ["Stop"],
   ["StopFailure"],
   ["SessionEnd"],
-  ["PreToolUse", ASK_TOOLS],
   ["PostToolUse", ASK_TOOLS],
+  ["Stop", null, true],
+  ["PreToolUse", ASK_TOOLS, true],
+  ["PermissionRequest", null, true],
 ];
 
 const slash = (p) => p.replaceAll("\\", "/");
@@ -45,9 +48,11 @@ export function withoutHooks(settings) {
 export function withHooks(settings, command = hookCommand()) {
   const next = withoutHooks(settings);
   next.hooks ??= {};
-  for (const [event, matcher] of EVENTS) {
-    // async: Claude never waits on Claudia
-    const group = { hooks: [{ type: "command", command, async: true, timeout: 15 }] };
+  for (const [event, matcher, waits] of EVENTS) {
+    const hook = waits
+      ? { type: "command", command: `${command} --decide`, timeout: 600, statusMessage: "checking in with Claudia" }
+      : { type: "command", command, async: true, timeout: 15 };
+    const group = { hooks: [hook] };
     (next.hooks[event] ??= []).push(matcher ? { matcher, ...group } : group);
   }
   return next;

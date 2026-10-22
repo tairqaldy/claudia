@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Tracker } from "../src/sessions.mjs";
+import { Tracker, displayName } from "../src/sessions.mjs";
 
 const SEC = 1000;
 const MIN = 60 * SEC;
 
-function setup({ entries = [], activity = null } = {}) {
+function setup({ entries = [], activity = null, away = false } = {}) {
   let now = 1_700_000_000_000;
   const queue = [];
   const pings = [];
@@ -26,6 +26,7 @@ function setup({ entries = [], activity = null } = {}) {
       },
     },
     transcripts: { read: () => transcript.entries, activity: () => transcript.activity, settle: async () => {} },
+    forceLoud: () => away,
     notify: async (kind, s, extra) => {
       pings.push({ kind, project: s.project, ...extra });
       return { messageId: ++msgId, label: kind === "start" ? "fixing tests" : undefined };
@@ -71,7 +72,7 @@ test("a long turn pings when it starts and when it's done, as a thread", async (
   assert.equal(done.replyTo, 101);
   assert.equal(done.took, 4 * MIN + 30 * SEC);
   assert.equal(done.finalText, "All 42 tests pass now.");
-  assert.match(tracker.describe(), /qn5 \(fixing tests\): idle, finished 0s ago, took 5m/);
+  assert.match(tracker.describe(), /fixing tests · qn5: idle, finished 0s ago, took 5m/);
 });
 
 test("past durations become the usual time", async () => {
@@ -168,4 +169,45 @@ test("session end forgets the session", async () => {
   assert.match(tracker.describe(), /qn5: open, idle/);
   await ev("SessionEnd", { reason: "other" });
   assert.equal(tracker.describe(), "no sessions seen in the last day");
+});
+
+test("a turn that leaves background tasks running is paused, not done", async () => {
+  const { pings, advance, ev, tracker } = setup();
+  await ev("UserPromptSubmit", { prompt: "run the eval suite" });
+  await advance(2 * MIN);
+  await ev("Stop", { last_assistant_message: "Started the evals in the background.", background_tasks: [{ description: "eval run", status: "running" }] });
+  assert.equal(pings.at(-1).kind, "paused");
+  assert.deepEqual(pings.at(-1).background, ["eval run"]);
+  assert.match(tracker.describe(), /paused 0s, 1 background task still running/);
+  assert.equal(tracker.usual("qn5"), null, "a paused turn isn't a finished duration");
+});
+
+test("while away, even quick turns ping", async () => {
+  const { pings, advance, ev } = setup({ away: true });
+  await ev("UserPromptSubmit", { prompt: "what's 2+2" });
+  await advance(5 * SEC);
+  await ev("Stop", { last_assistant_message: "4" });
+  assert.deepEqual(pings.map((p) => p.kind), ["done"]);
+});
+
+test("finished work lands in the diary, and projects are remembered", async () => {
+  const { advance, ev, tracker } = setup();
+  await ev("UserPromptSubmit", { prompt: "build" });
+  await advance(3 * MIN);
+  await ev("Stop", { last_assistant_message: "built" });
+  assert.equal(tracker.state.log.length, 1);
+  assert.equal(tracker.state.log[0].took, 180);
+  assert.deepEqual(tracker.recentProjects(), [{ cwd: "/home/me/qn5", name: "qn5" }]);
+});
+
+test("limits resetting pings once", async () => {
+  const { pings, ev } = setup();
+  await ev("Notification", { notification_type: "quota_auto_resume_fired", message: "resumed" });
+  assert.deepEqual(pings.map((p) => p.kind), ["resumed"]);
+});
+
+test("titles beat meaningless folder names", () => {
+  assert.equal(displayName({ project: "scratch-2026-10-15-fe816a", label: "qaldy design system" }), "qaldy design system");
+  assert.equal(displayName({ project: "qn5", label: "checkout tests" }), "checkout tests · qn5");
+  assert.equal(displayName({ project: "qn5" }), "qn5");
 });

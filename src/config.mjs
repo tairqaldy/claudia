@@ -20,6 +20,11 @@ const DEFAULTS = {
   askDelaySeconds: 20, // grace period before "needs you" pings, in case you're at the laptop
   timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
   name: userInfo().username,
+  holdMinutes: 8, // while you're away, how long a finished session waits for your reply (max 9)
+  remotePermissionMode: "acceptEdits", // for sessions you start from your phone
+  digestTime: "10:00", // daily digest; "" turns it off
+  learnHabits: true, // suggest shortcuts for things you keep asking for
+  autoKeepAwake: true, // keep the laptop awake while you're away and sessions are working
 };
 
 export function readJson(path, fallback) {
@@ -48,6 +53,7 @@ export function loadConfig() {
   return {
     ...DEFAULTS,
     ...file,
+    holdMinutes: Math.min(Math.max(Number(file.holdMinutes ?? DEFAULTS.holdMinutes), 1), 9), // hooks time out at 10m
     telegramToken: env.CLAUDIA_TELEGRAM_TOKEN || file.telegramToken,
     anthropicKey: env.CLAUDIA_ANTHROPIC_KEY || file.anthropicKey,
     anthropicWorkspace: env.CLAUDIA_ANTHROPIC_WORKSPACE || file.anthropicWorkspace,
