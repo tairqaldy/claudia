@@ -1,0 +1,28 @@
+{
+  "name": "claudia",
+  "version": "0.1.0",
+  "description": "Claudia texts you on Telegram when your Claude Code sessions start something long, finish, or need you. Text her back any time.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Tair Kaldybayev",
+  "repository": "github:tairqaldy/claudia",
+  "bin": {
+    "claudia": "bin/claudia.mjs"
+  },
+  "scripts": {
+    "setup": "node bin/claudia.mjs setup",
+    "start": "node bin/claudia.mjs start",
+    "stop": "node bin/claudia.mjs stop",
+    "restart": "node bin/claudia.mjs restart",
+    "status": "node bin/claudia.mjs status",
+    "logs": "node bin/claudia.mjs logs",
+    "uninstall": "node bin/claudia.mjs uninstall",
+    "test": "node --test \"test/*.test.mjs\""
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.1.0"
+  }
+}
