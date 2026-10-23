@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { test } from "node:test";
-import { verifyInitData } from "../src/miniapp.mjs";
+import { createAppServer, verifyInitData } from "../src/miniapp.mjs";
 import { timeline } from "../src/transcript.mjs";
 
 const TOKEN = "123456:test-token";
@@ -45,4 +45,32 @@ test("timeline folds a turn into prompt, one activity line, and the final messag
     { type: "activity", text: "ran 1 command · edited 1 file · looked at 1 file" },
     { type: "claude", text: "All 42 pass now." },
   ]);
+});
+
+test("state is long-polled: a request with the latest version waits for the next change", async () => {
+  let n = 0;
+  const api = { state: async () => ({ n }), watching() {}, actions: {} };
+  const app = createAppServer({ config: { telegramToken: TOKEN, chatId: 42 }, api });
+  const port = 47900 + Math.floor(Math.random() * 90);
+  await app.listen(port);
+  const auth = { authorization: `tma ${sign({ ...fresh, auth_date: String(Math.floor(Date.now() / 1000)) })}` };
+  const get = (q = "") => fetch(`http://127.0.0.1:${port}/api/state${q}`, { headers: auth }).then((r) => r.json());
+
+  const first = await get();
+  assert.equal(first.n, 0);
+  const started = Date.now();
+  const next = get(`?since=${first.version}`);
+  setTimeout(() => {
+    n = 1;
+    app.broadcast();
+  }, 150);
+  const second = await next;
+  assert.equal(second.n, 1);
+  assert.ok(second.version > first.version);
+  assert.ok(Date.now() - started >= 150, "it waited for the change instead of answering at once");
+
+  const stale = await get(`?since=${first.version}`); // an old version answers at once
+  assert.equal(stale.n, 1);
+  assert.equal((await fetch(`http://127.0.0.1:${port}/api/state`)).status, 401);
+  app.close();
 });

@@ -1,6 +1,6 @@
 // Components from 02 Components, with the motion from 04 Motion.
 import { AnimatePresence, m, useReducedMotion } from "motion/react";
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { haptic } from "./tg.js";
 
 // ---- motion tokens
@@ -14,15 +14,27 @@ export const stamp = { type: "spring", stiffness: 500, damping: 18 };
 // cards and rows never overshoot (rule 05)
 export const slide = { duration: dur.emph, ease: ease.enter };
 
-export function useNow(active, every = 1000) {
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    if (!active) return;
-    const id = setInterval(() => setNow(Date.now()), every);
-    return () => clearInterval(id);
-  }, [active, every]);
-  return now;
+// One shared clock: a single interval, and only the small pieces that show time re-render each
+// second (never whole screens). It runs only while something on screen shows a timer.
+const clock = { now: Date.now(), subs: new Set(), timer: 0 };
+function subscribe(fn) {
+  clock.subs.add(fn);
+  if (!clock.timer) {
+    clock.now = Date.now();
+    clock.timer = setInterval(() => {
+      if (document.hidden) return;
+      clock.now = Date.now();
+      for (const f of clock.subs) f();
+    }, 1000);
+  }
+  return () => {
+    clock.subs.delete(fn);
+    if (clock.subs.size) return;
+    clearInterval(clock.timer);
+    clock.timer = 0;
+  };
 }
+export const useNow = () => useSyncExternalStore(subscribe, () => clock.now);
 
 // ---- marks
 

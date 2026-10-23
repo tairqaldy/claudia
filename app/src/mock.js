@@ -50,7 +50,7 @@ const emit = () => listener({ ...state, now: Date.now() });
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export const mockApi = {
-  stream(onState, onStatus) {
+  live(onState, onStatus) {
     listener = onState;
     setTimeout(() => {
       onStatus("live");

@@ -4,10 +4,10 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "../api.js";
 import { NeedsYouCard } from "../needs.jsx";
 import { guardTyping, haptic } from "../tg.js";
-import { Chip, Dots, HandArrow, Icon, Skeleton, StatusSticker, dur, ease, slide, useToast } from "../ui.jsx";
+import { Chip, Dots, HandArrow, Icon, Skeleton, StatusSticker, dur, ease, slide, useNow, useToast } from "../ui.jsx";
 import { fmtClock, fmtDur, isLatin, rowState } from "../util.js";
 
-export function Session({ id, data, now, back }) {
+export function Session({ id, data, back }) {
   const toast = useToast();
   const s = data.sessions.find((x) => x.id === id);
   const [detail, setDetail] = useState(null);
@@ -40,7 +40,7 @@ export function Session({ id, data, now, back }) {
     );
   }
 
-  const r = rowState(s, now);
+  const r = rowState(s, Date.now()); // only the meta line below ticks
   const ask = data.holds.find((h) => h.sessionId === id && h.kind !== "stop");
   const hold = data.holds.find((h) => h.sessionId === id && h.kind === "stop");
   const sticker = { done: "done", paused: "paused", failed: "failed", needs: "needs" }[ask ? "needs" : r.kind];
@@ -49,11 +49,6 @@ export function Session({ id, data, now, back }) {
   const shown = more ? ordered : ordered.slice(0, 3);
   const timeline = detail?.timeline ?? [];
   const lastClaude = timeline.map((t) => t.type).lastIndexOf("claude");
-
-  const meta =
-    r.kind === "working"
-      ? `${s.project} · working ${fmtClock(r.elapsed)}${s.usualMs ? `, usually ~${fmtDur(s.usualMs)}` : ""}`
-      : `${s.project}${s.lastDone?.took ? ` · took ${fmtDur(s.lastDone.took)}` : ""}${s.usualMs ? `, usually ~${fmtDur(s.usualMs)}` : ""}`;
 
   const send = async (payload, label) => {
     const bubble = { id: Date.now(), text: label, state: "sending" };
@@ -91,9 +86,7 @@ export function Session({ id, data, now, back }) {
         <m.h1 layoutId={`title-${id}`} className={`title${isLatin(s.title) ? "" : " is-content"}`} transition={{ duration: dur.slow, ease: ease.standard }}>
           {s.title}
         </m.h1>
-        <div className="meta" style={{ fontSize: 14 }}>
-          {meta}
-        </div>
+        <SessionMeta s={s} />
       </div>
 
       <m.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ ...slide, delay: 0.08 }} style={{ display: "flex", flexDirection: "column", gap: 16, paddingTop: 28 }}>
@@ -136,7 +129,7 @@ export function Session({ id, data, now, back }) {
             </m.div>
           ))}
         </AnimatePresence>
-        {ask && <NeedsYouCard item={{ key: ask.id, hold: ask, sessionId: id }} session={s} now={now} recipes={recipes} />}
+        {ask && <NeedsYouCard item={{ key: ask.id, hold: ask, sessionId: id }} session={s} recipes={recipes} />}
         <div ref={bottom} />
       </m.div>
 
@@ -172,6 +165,16 @@ export function Session({ id, data, now, back }) {
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+function SessionMeta({ s }) {
+  const r = rowState(s, useNow());
+  const usual = s.usualMs ? `, usually ~${fmtDur(s.usualMs)}` : "";
+  return (
+    <div className="meta" style={{ fontSize: 14 }}>
+      {r.kind === "working" ? `${s.project} · working ${fmtClock(r.elapsed)}${usual}` : `${s.project}${s.lastDone?.took ? ` · took ${fmtDur(s.lastDone.took)}` : ""}${usual}`}
     </div>
   );
 }

@@ -5,14 +5,20 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="color-scheme" content="light dark" />
     <title>Claudia</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <script>
+      // paint the right theme before anything else loads
+      document.documentElement.dataset.theme = window.Telegram?.WebApp?.colorScheme === "dark" ? "dark" : "light";
+    </script>
+    <style>html,body{background:#fdfbf9;margin:0}html[data-theme=dark],html[data-theme=dark] body{background:#16110c}.boot{justify-content:center;align-items:center;height:100vh;display:flex}.boot i{background:#ff6f1e;border:2px solid #171717;border-radius:12px;width:40px;height:40px;display:block;transform:rotate(-9deg)}</style>
+    <!-- fonts never block the first paint -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600&family=Geist:wght@400;500;600&family=Geist+Mono&family=Nunito:wght@500;600&display=swap" rel="stylesheet" />
-    <script src="https://telegram.org/js/telegram-web-app.js"></script>
-    <script type="module" crossorigin src="./assets/index-C-LyvzCv.js"></script>
+    <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600&family=Geist:wght@400;500;600&family=Geist+Mono&display=swap" onload="this.onload=null;this.rel='stylesheet'" />
+    <script type="module" crossorigin src="./assets/index-CCymxEnO.js"></script>
     <link rel="stylesheet" crossorigin href="./assets/index-CHdt3Q0L.css">
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root"><div class="boot"><i></i></div></div>
   </body>
 </html>

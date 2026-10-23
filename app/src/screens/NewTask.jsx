@@ -6,7 +6,7 @@ import { confirmIdentity, guardTyping, haptic } from "../tg.js";
 import { BackLink, Chip, Icon, Pill, Radio, Sparkle, Toggle, slide, useToast } from "../ui.jsx";
 import { fmtAgo } from "../util.js";
 
-export function NewTask({ data, now, back }) {
+export function NewTask({ data, back }) {
   const toast = useToast();
   const [cwd, setCwd] = useState(data.projects[0]?.cwd ?? null);
   const [recipe, setRecipe] = useState(null);
@@ -15,7 +15,9 @@ export function NewTask({ data, now, back }) {
   const project = data.projects.find((p) => p.cwd === cwd);
   const recipes = data.recipes.filter((r) => r.key !== "continue" && r.key !== "summary").slice(0, 6);
 
-  useEffect(() => guardTyping(Boolean(text.trim())), [text]);
+  useEffect(() => {
+    guardTyping(Boolean(text.trim()));
+  }, [text]);
   useEffect(() => () => guardTyping(false), []);
 
   const run = async () => {
@@ -60,7 +62,7 @@ export function NewTask({ data, now, back }) {
               <Radio on={p.cwd === cwd} />
               <span style={{ flex: 1, fontSize: 16, fontWeight: p.cwd === cwd ? 500 : 400 }}>{p.name}</span>
               <span className="meta" style={{ width: 80, textAlign: "right" }}>
-                {fmtAgo(now - p.lastSeen)}
+                {fmtAgo(Date.now() - p.lastSeen)}
               </span>
             </button>
           ))}

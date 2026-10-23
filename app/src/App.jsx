@@ -1,43 +1,48 @@
 import { AnimatePresence, LayoutGroup, LazyMotion, MotionConfig, domMax, m } from "motion/react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api } from "./api.js";
+import { api, cachedState, mock } from "./api.js";
 import { Home } from "./screens/Home.jsx";
 import { Laptop } from "./screens/Laptop.jsx";
 import { NewTask } from "./screens/NewTask.jsx";
 import { Session } from "./screens/Session.jsx";
 import { backButton, haptic } from "./tg.js";
-import { Mark, Skeleton, ToastProvider, dur, ease, useNow } from "./ui.jsx";
+import { Mark, Skeleton, ToastProvider, dur, ease } from "./ui.jsx";
+
+const needing = (state) => state?.holds.filter((h) => h.kind !== "stop").length ?? 0;
 
 export function App() {
-  const [data, setData] = useState(null);
+  // paint the last state we saw right away; it's replaced as soon as the laptop answers
+  const [data, setData] = useState(() => (mock ? null : cachedState()));
+  const [fresh, setFresh] = useState(false);
   const [status, setStatus] = useState("connecting");
   const [stack, setStack] = useState([{ name: "home" }]);
-  const stream = useRef(null);
-  const needsBefore = useRef(0);
+  const live = useRef(null);
+  const needsBefore = useRef(needing(data));
 
   useEffect(() => {
-    stream.current = api.stream(
-      (next) => {
-        // something new needs you: feel it (04 Motion → haptics)
-        const needs = next.holds.filter((h) => h.kind !== "stop").length;
-        if (needs > needsBefore.current) haptic.warning();
-        needsBefore.current = needs;
-        setData(next);
-      },
-      setStatus,
-    );
-    return () => stream.current?.stop();
+    live.current = api.live((next) => {
+      // something new needs you: feel it (04 Motion → haptics)
+      const needs = needing(next);
+      if (needs > needsBefore.current) haptic.warning();
+      needsBefore.current = needs;
+      setData(next);
+      setFresh(true);
+    }, setStatus);
+    return () => live.current?.stop();
   }, []);
 
   const screen = stack.at(-1);
-  useEffect(() => window.scrollTo(0, 0), [stack.length]); // every screen opens at its top
+  // every screen opens at its top (braces: newer Chromium returns a promise from scrollTo, and
+  // React would take that for a cleanup function)
+  useEffect(() => {
+    window.scrollTo(0, 0);
+  }, [stack.length]);
   const go = useCallback((name, params = {}) => setStack((s) => [...s, { name, ...params }]), []);
   const back = useCallback(() => setStack((s) => (s.length > 1 ? s.slice(0, -1) : s)), []);
   useEffect(() => (stack.length > 1 ? backButton(back) : undefined), [stack.length, back]);
 
-  // timers tick only while something is running
-  const ticking = Boolean(data?.sessions.some((s) => s.status === "working" || s.status === "waiting") || data?.holds.length);
-  const now = useNow(ticking);
+  const offline = status === "offline";
+  const staleAt = fresh && !offline ? null : data?.now;
 
   return (
     <LazyMotion features={domMax} strict>
@@ -47,7 +52,7 @@ export function App() {
             {status === "unauthorized" ? (
               <Notice title="open me from telegram" text="this page only works inside your claudia chat. tap the menu button there." />
             ) : !data ? (
-              <Loading offline={status === "offline"} />
+              <Loading offline={offline} />
             ) : (
               <LayoutGroup>
                 <AnimatePresence mode="popLayout" initial={false}>
@@ -58,9 +63,9 @@ export function App() {
                     animate={{ opacity: 1, transition: { duration: dur.emph, ease: ease.enter } }}
                     exit={{ opacity: 0, transition: { duration: 0.12, ease: ease.exit } }}
                   >
-                    {screen.name === "home" && <Home data={data} now={now} open={(id) => go("session", { id })} go={go} offline={status === "offline"} retry={() => stream.current?.retry()} />}
-                    {screen.name === "session" && <Session id={screen.id} data={data} now={now} back={back} />}
-                    {screen.name === "new" && <NewTask data={data} now={now} back={back} />}
+                    {screen.name === "home" && <Home data={data} open={(id) => go("session", { id })} go={go} offline={offline} staleAt={staleAt} retry={() => live.current?.retry()} />}
+                    {screen.name === "session" && <Session id={screen.id} data={data} back={back} />}
+                    {screen.name === "new" && <NewTask data={data} back={back} />}
                     {screen.name === "laptop" && <Laptop data={data} back={back} />}
                   </m.div>
                 </AnimatePresence>
@@ -80,7 +85,7 @@ function Loading({ offline }) {
       <Skeleton width="70%" height={44} />
       <Skeleton width="45%" height={44} />
       {offline ? (
-        <div className="meta">can't reach the laptop yet. it might be asleep. retrying every 10s.</div>
+        <div className="meta">can't reach the laptop yet. it might be asleep. still trying.</div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 10, paddingTop: 20 }}>
           <Skeleton width="60%" />

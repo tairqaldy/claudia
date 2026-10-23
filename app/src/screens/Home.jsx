@@ -4,10 +4,10 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "../api.js";
 import { NeedsYouCard } from "../needs.jsx";
 import { haptic } from "../tg.js";
-import { Bolt, HandArrow, Heart, Icon, Mark, MarkerUnderline, Odometer, Pill, Progress, StatusPill, dur, ease, slide, useToast } from "../ui.jsx";
-import { fmtClock, fmtDur, rowState } from "../util.js";
+import { Bolt, Dots, HandArrow, Heart, Icon, Mark, MarkerUnderline, Odometer, Pill, Progress, StatusPill, dur, ease, slide, useNow, useToast } from "../ui.jsx";
+import { fmtClock, fmtDur, rowState, timeOfDay } from "../util.js";
 
-export function Home({ data, now, open, go, offline, retry }) {
+export function Home({ data, open, go, offline, staleAt, retry }) {
   const toast = useToast();
   const firstLoad = useRef(true);
   const [showAll, setShowAll] = useState(false);
@@ -85,10 +85,16 @@ export function Home({ data, now, open, go, offline, retry }) {
         </div>
       )}
 
+      {staleAt && !offline && (
+        <div className="meta" style={{ display: "flex", alignItems: "center", gap: 6, paddingTop: 10 }}>
+          <Dots /> showing {timeOfDay(staleAt)}, catching up
+        </div>
+      )}
+
       {offline && (
         <div style={{ marginTop: 20, display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 10, padding: 22, borderRadius: "var(--radius-md)", background: "var(--color-danger-soft)" }}>
           <div style={{ fontFamily: "var(--font-display)", fontSize: 22, fontWeight: 500, color: "var(--color-danger)" }}>can't reach the laptop</div>
-          <div className="meta">it might be asleep, or the tunnel dropped. it retries every 10s.</div>
+          <div className="meta">it might be asleep, or the tunnel dropped. still trying{staleAt ? `, showing ${timeOfDay(staleAt)}` : ""}.</div>
           <Pill onClick={retry}>try now</Pill>
         </div>
       )}
@@ -96,7 +102,7 @@ export function Home({ data, now, open, go, offline, retry }) {
       <div style={{ display: "flex", flexDirection: "column", gap: 12, marginTop: needsCount ? 0 : 20 }}>
         <AnimatePresence initial={false}>
           {shownNeeds.map((item) => (
-            <NeedsYouCard key={item.key} item={item} session={byId[item.sessionId]} now={now} recipes={recipes} onOpen={() => open(item.sessionId)} />
+            <NeedsYouCard key={item.key} item={item} session={byId[item.sessionId]} recipes={recipes} onOpen={() => open(item.sessionId)} />
           ))}
         </AnimatePresence>
         {needs.length > 1 && !showAll && (
@@ -111,22 +117,22 @@ export function Home({ data, now, open, go, offline, retry }) {
           <div className="section">
             working <Bolt />
           </div>
-          <m.div layout style={{ display: "flex", flexDirection: "column" }}>
+          <div style={{ display: "flex", flexDirection: "column" }}>
             {working.map((s, i) => (
-              <SessionRow key={s.id} s={s} now={now} onOpen={() => open(s.id)} transition={stagger(i)} />
+              <SessionRow key={s.id} s={s} onOpen={() => open(s.id)} transition={stagger(i)} />
             ))}
-          </m.div>
+          </div>
         </section>
       )}
 
       {later.length > 0 && (
         <section style={{ paddingTop: 26 }}>
           <div className="section">lately</div>
-          <m.div layout style={{ display: "flex", flexDirection: "column" }}>
+          <div style={{ display: "flex", flexDirection: "column" }}>
             {later.map((s, i) => (
-              <SessionRow key={s.id} s={s} now={now} onOpen={() => open(s.id)} transition={stagger(i + working.length)} />
+              <SessionRow key={s.id} s={s} onOpen={() => open(s.id)} transition={stagger(i + working.length)} />
             ))}
-          </m.div>
+          </div>
         </section>
       )}
 
@@ -154,11 +160,13 @@ export function Home({ data, now, open, go, offline, retry }) {
   );
 }
 
-export function SessionRow({ s, now, onOpen, transition }) {
-  const r = rowState(s, now);
+export function SessionRow({ s, onOpen, transition }) {
+  // the row and its shared title re-render only when the data changes; only the small parts
+  // that show time tick every second
+  const { kind } = rowState(s, Date.now());
   return (
     <m.button
-      layout
+      layout="position"
       className="row"
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
@@ -171,27 +179,46 @@ export function SessionRow({ s, now, onOpen, transition }) {
     >
       <div style={{ display: "flex", alignItems: "flex-start", gap: 12, width: "100%" }}>
         <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 2 }}>
-          <m.div layoutId={`title-${s.id}`} className="row-title" style={{ color: r.kind === "idle" ? "var(--color-text-2)" : undefined }}>
+          <m.div layoutId={`title-${s.id}`} className="row-title" style={{ color: kind === "idle" ? "var(--color-text-2)" : undefined }}>
             {s.title}
           </m.div>
-          <div className="meta">{s.title !== s.project ? s.project : ""}{r.kind !== "working" && r.note ? `${s.title !== s.project ? " · " : ""}${r.note}` : ""}</div>
+          <RowMeta s={s} />
         </div>
-        {r.kind === "working" ? (
-          <span className="mono" style={{ width: 96, flexShrink: 0, textAlign: "right", fontSize: 15, color: r.tone === "quiet" ? "var(--color-text-2)" : undefined }}>
-            {fmtClock(r.elapsed)}
-          </span>
-        ) : r.kind === "idle" ? (
+        {kind === "working" ? (
+          <RowClock s={s} />
+        ) : kind === "idle" ? (
           <span style={{ width: 8, height: 8, borderRadius: 4, background: "var(--color-neutral-400)", flexShrink: 0, marginTop: 8 }} />
         ) : (
-          <StatusPill kind={r.kind} />
+          <StatusPill kind={kind} />
         )}
       </div>
-      {r.kind === "working" && (r.progress !== null || r.note) && (
-        <div style={{ display: "flex", alignItems: "center", gap: 12, width: "100%" }}>
-          {r.progress !== null ? <Progress value={r.progress} tone={r.tone} /> : <div style={{ flex: 1 }} />}
-          <span style={{ width: 96, flexShrink: 0, textAlign: "right", fontSize: 12, color: r.tone === "over" ? "var(--color-primary-ink)" : "var(--color-text-2)" }}>{r.note}</span>
-        </div>
-      )}
+      {kind === "working" && <RowProgress s={s} />}
     </m.button>
+  );
+}
+
+function RowMeta({ s }) {
+  const r = rowState(s, useNow());
+  const project = s.title !== s.project ? s.project : "";
+  return <div className="meta">{[project, r.kind !== "working" && r.note].filter(Boolean).join(" · ")}</div>;
+}
+
+function RowClock({ s }) {
+  const r = rowState(s, useNow());
+  return (
+    <span className="mono" style={{ width: 96, flexShrink: 0, textAlign: "right", fontSize: 15, color: r.tone === "quiet" ? "var(--color-text-2)" : undefined }}>
+      {fmtClock(r.elapsed)}
+    </span>
+  );
+}
+
+function RowProgress({ s }) {
+  const r = rowState(s, useNow());
+  if (r.progress === null && !r.note) return null;
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 12, width: "100%" }}>
+      {r.progress !== null ? <Progress value={r.progress} tone={r.tone} /> : <div style={{ flex: 1 }} />}
+      <span style={{ width: 96, flexShrink: 0, textAlign: "right", fontSize: 12, color: r.tone === "over" ? "var(--color-primary-ink)" : "var(--color-text-2)" }}>{r.note}</span>
+    </div>
   );
 }

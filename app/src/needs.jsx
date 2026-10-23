@@ -4,12 +4,12 @@ import { m, useReducedMotion } from "motion/react";
 import { useState } from "react";
 import { api } from "./api.js";
 import { haptic } from "./tg.js";
-import { Chip, dur, ease, Icon, slide, useToast } from "./ui.jsx";
+import { Chip, dur, ease, Icon, slide, useNow, useToast } from "./ui.jsx";
 import { fmtDur, isLatin } from "./util.js";
 
 const KIND = { ask: "asking", plan: "plan", permission: "permission", stop: "waiting for you", waiting: "asking" };
 
-export function NeedsYouCard({ item, session, now, recipes, onOpen }) {
+export function NeedsYouCard({ item, session, recipes, onOpen }) {
   const toast = useToast();
   const reduced = useReducedMotion();
   const [picked, setPicked] = useState([]); // labels chosen for the current question
@@ -18,7 +18,6 @@ export function NeedsYouCard({ item, session, now, recipes, onOpen }) {
   const hold = item.hold;
   const question = hold?.kind === "ask" ? hold.questions.find((q) => !(q.question in (hold.answers ?? {}))) : null;
   const qi = question ? hold.questions.indexOf(question) : -1;
-  const age = now - (hold?.since ?? item.since ?? now);
 
   const act = async (action, value, label) => {
     try {
@@ -53,9 +52,7 @@ export function NeedsYouCard({ item, session, now, recipes, onOpen }) {
     >
       <div style={{ display: "flex", justifyContent: "space-between", gap: 12, fontSize: 13 }}>
         <span style={{ color: "var(--color-primary-ink)" }}>{meta}</span>
-        <span className="mono" style={{ color: "var(--color-text-2)", flexShrink: 0 }}>
-          {hold?.kind === "stop" ? `${fmtDur(Math.max(0, 8 * 60_000 - age))} left` : fmtDur(age)}
-        </span>
+        <Since at={hold?.since ?? item.since} left={hold?.kind === "stop" ? 8 * 60_000 : 0} />
       </div>
 
       {bigText && (
@@ -153,5 +150,15 @@ export function NeedsYouCard({ item, session, now, recipes, onOpen }) {
         </div>
       )}
     </m.div>
+  );
+}
+
+// how long it has waited (or, for a finished session held for a reply, how long is left)
+function Since({ at, left }) {
+  const age = useNow() - (at ?? Date.now());
+  return (
+    <span className="mono" style={{ color: "var(--color-text-2)", flexShrink: 0 }}>
+      {left ? `${fmtDur(Math.max(0, left - age))} left` : fmtDur(age)}
+    </span>
   );
 }
