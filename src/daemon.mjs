@@ -13,7 +13,9 @@ import { loadRecipes, saveRecipe } from "./recipes.mjs";
 import { createRunner } from "./runner.mjs";
 import { Tracker, displayName } from "./sessions.mjs";
 import { createTelegram } from "./telegram.mjs";
-import { readTail, timeline } from "./transcript.mjs";
+import { activity, readTail, timeline } from "./transcript.mjs";
+import { cardName, renderBatch, renderBoard, renderCard, renderTerminal } from "./cards.mjs";
+import { parseTerminalEvent } from "./terminal.mjs";
 import { findCloudflared, startTunnel } from "./tunnel.mjs";
 import { clip, fmtDur, inQuietHours, parseDuration } from "./util.mjs";
 
@@ -33,7 +35,9 @@ const COMMANDS = [
   { command: "unmute", description: "sounds back on" },
   { command: "notes", description: "what i remember about you" },
 ];
-const HELP = `i text you when a claude code session starts something long, finishes, or needs you. "started" pings are silent, the rest make a sound.
+const HELP = `every task gets one card. it shows up quietly while the task works, and comes back with a sound when it's done or needs you. the pinned message shows what's running right now.
+
+reply to a card to tell that session what to do next. reply to a failed terminal command and i'll have claude look at it.
 
 /away when you leave the laptop: finished sessions wait for your reply here, and their questions come as buttons
 /back when you're at the laptop again
@@ -53,6 +57,7 @@ const save = () => {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => writeJson(PATHS.state, state), 300);
   app?.broadcast();
+  refreshBoard();
 };
 const chatId = () => config.chatId;
 const clock = (ms) => new Date(ms).toLocaleTimeString("en-GB", { timeZone: config.timezone, hour: "2-digit", minute: "2-digit" });
@@ -84,30 +89,145 @@ const actions = {
   projects: () => tracker.recentProjects(30).map((p) => p.name),
   continueSession,
   startTask,
+  sessionActivity: describeActivity,
+  terminal: () =>
+    (state.terminal ?? [])
+      .slice(-5)
+      .map((t) => `- \`${clip(t.command, 80)}\` in ${t.cwd?.split(/[\\/]/).pop() ?? "?"}: ${t.ok ? "ok" : `failed (exit ${t.exitCode ?? "?"})`}, ${fmtDur(t.durationMs)}, ${fmtDur(Date.now() - t.at)} ago`)
+      .join("\n"),
 };
 const brain = createBrain({ config, memory, tracker, prefs, actions, onError: (err) => log("brain:", err) });
 
 // ---- pings
 
+// Each task has one card. "start" posts it silently, "long", "working" and progress edit it in
+// place, and an outcome (done, needs you, stuck) deletes it and posts it again at the bottom with
+// a sound. Cards remember which session they belong to, so replying to one talks to that session.
 async function notify(kind, session, extra = {}) {
   if (!chatId()) return null;
-  if (kind === "ask" && control.asking(session.id)) return null; // it's already here as buttons
-  const hold = kind === "done" || kind === "paused" ? control.stopHold(session.id) : null;
-  let { text, label } = await brain.ping(kind, session, extra);
-  if (hold) text += "\n\n↩ reply to keep it going";
-  const silent = kind === "start" || kind === "long" || hushed();
-  let msg;
-  try {
-    msg = await tg.send(chatId(), text, { silent, replyTo: extra.replyTo, markup: hold ? control.stopButtons(hold) : null });
-  } catch (err) {
-    if (hold) control.release(hold); // nothing to reply to, so the session shouldn't wait
-    throw err;
+  const s = session;
+  const card = { name: cardName(s), since: s.turnStart, usually: extra.usually ?? tracker.usual(s.project) };
+
+  if (kind === "start") {
+    if (!s.label) s.label = (await brain.summarize("start", s, extra)).label ?? null;
+    const msg = await tg.send(chatId(), renderCard({ ...card, name: cardName(s), state: "working", step: stepOf(s) }, clock), { silent: true, html: true });
+    indexCard(msg.message_id, s.id);
+    log(`card start · ${s.project}`);
+    return { messageId: msg.message_id, label: s.label };
   }
-  if (hold) control.attach(hold, msg.message_id, text);
-  memory.addMessage("assistant", text);
-  log(`ping ${kind} · ${session.project}`);
-  return { messageId: msg.message_id, label };
+  if (kind === "long" || kind === "working" || kind === "resumed") {
+    if (extra.replyTo) await tg.edit(chatId(), extra.replyTo, renderCard({ ...card, state: "working", long: extra.elapsed, step: stepOf(s) }, clock), undefined, { html: true });
+    return null;
+  }
+  if (kind === "ask") {
+    if (control.asking(s.id)) return null; // it's already here as buttons
+    if (extra.replyTo) await tg.remove(chatId(), extra.replyTo);
+    const msg = await tg.send(chatId(), renderCard({ ...card, state: "needs", gist: s.waitingFor }, clock), { silent: hushed(), html: true });
+    indexCard(msg.message_id, s.id);
+    memory.addMessage("assistant", `${card.name} needs you: ${s.waitingFor}`);
+    log(`card ask · ${s.project}`);
+    return { messageId: msg.message_id };
+  }
+
+  // an outcome: done, paused or failed
+  const { verdict, gist } = await brain.summarize(kind, s, extra);
+  const hold = kind === "done" || kind === "paused" ? control.stopHold(s.id) : null;
+  const out = { ...card, state: verdict, took: extra.took, gist, hint: hold ? "reply to keep it going" : null };
+  if (extra.replyTo) await tg.remove(chatId(), extra.replyTo);
+  memory.addMessage("assistant", `${card.name}: ${verdict}. ${gist}`);
+  log(`card ${verdict} · ${s.project}`);
+  if (hold) {
+    // a session waiting for your reply gets its own message with buttons, right away
+    const text = renderCard(out, clock);
+    let msg;
+    try {
+      msg = await tg.send(chatId(), text, { silent: hushed(), html: true, markup: control.stopButtons(hold) });
+    } catch (err) {
+      control.release(hold); // nothing to reply to, so the session shouldn't wait
+      throw err;
+    }
+    control.attach(hold, msg.message_id, text, true);
+    indexCard(msg.message_id, s.id);
+    return { messageId: msg.message_id };
+  }
+  outbox.push({ card: out, sessionId: s.id, loud: verdict !== "paused" });
+  clearTimeout(outboxTimer);
+  outboxTimer = setTimeout(flushOutbox, BATCH_MS);
+  return null;
 }
+
+// Tasks that finish within a few seconds of each other share one message.
+const BATCH_MS = 6000;
+let outbox = [];
+let outboxTimer = null;
+async function flushOutbox() {
+  const batch = outbox;
+  outbox = [];
+  if (!batch.length) return;
+  const silent = hushed() || !batch.some((b) => b.loud);
+  try {
+    const msg = await tg.send(chatId(), batch.length === 1 ? renderCard(batch[0].card, clock) : renderBatch(batch.map((b) => b.card)), { silent, html: true });
+    if (batch.length === 1) indexCard(msg.message_id, batch[0].sessionId);
+  } catch (err) {
+    log("telegram:", err);
+  }
+}
+
+// message id -> session id, so a reply to a card reaches its session (the last 300 cards)
+function indexCard(messageId, sessionId) {
+  state.cards = { ...(state.cards ?? {}), [messageId]: sessionId };
+  const ids = Object.keys(state.cards);
+  if (ids.length > 300) for (const id of ids.slice(0, ids.length - 300)) delete state.cards[id];
+  save();
+}
+
+// what a working session is doing right now, from its transcript, in a few words
+function stepOf(s) {
+  if (s.status !== "working" || !s.transcript) return null;
+  try {
+    return activity(readTail(s.transcript, 256 * 1024)).now;
+  } catch {
+    return null;
+  }
+}
+
+// Working cards follow along: every 20s, any card whose step changed is edited (silently).
+setInterval(() => {
+  for (const s of tracker.sessions()) {
+    if (s.status !== "working" || !s.announced || !s.startMsgId) continue;
+    const step = stepOf(s);
+    if (!step || step === s.step) continue;
+    s.step = step;
+    tg.edit(chatId(), s.startMsgId, renderCard({ name: cardName(s), state: "working", since: s.turnStart, usually: tracker.usual(s.project), step }, clock), undefined, { html: true });
+  }
+}, 20_000).unref();
+
+// ---- the pinned "right now" message
+
+let boardTimer = null;
+let boardText = null;
+function refreshBoard(delay = 3000) {
+  if (boardTimer || !chatId()) return;
+  boardTimer = setTimeout(async () => {
+    boardTimer = null;
+    const text = renderBoard({ sessions: tracker.snapshot(), holds: control.list(), doneToday: doneToday(), away: control.away() });
+    const markup = state.appUrl ? { inline_keyboard: [[{ text: "open claudia", web_app: { url: state.appUrl } }]] } : { inline_keyboard: [] };
+    const key = text + JSON.stringify(markup);
+    if (key === boardText) return;
+    if (state.boardId && (await tg.update(chatId(), state.boardId, text, markup))) return void (boardText = key);
+    try {
+      const msg = await tg.send(chatId(), text, { silent: true, html: true, markup });
+      state.boardId = msg.message_id;
+      boardText = key;
+      await tg.pin(chatId(), msg.message_id);
+      save();
+    } catch (err) {
+      log("board:", err);
+    }
+  }, delay);
+}
+// elapsed minutes on the board move on even when nothing else happens
+setInterval(() => tracker.sessions().some((s) => s.status === "working") && refreshBoard(0), 60_000).unref();
 
 const say = (text, opts) => (chatId() ? tg.send(chatId(), text, opts).catch((err) => log("telegram:", err)) : null);
 
@@ -143,26 +263,86 @@ function setAway(on) {
 
 // ---- acting on the laptop
 
-function continueSession(query, instruction) {
+// "plan" first: it plans, and the plan comes to your phone to approve or change before anything is touched
+const PLAN_FIRST = "Before changing anything, make a plan and present it with ExitPlanMode so I can approve it from my phone.";
+
+function continueSession(query, instruction, plan = false) {
   const s = tracker.find(query);
   if (!s) return "no session like that in the last day";
-  return continueThis(s, instruction);
+  return continueThis(s, instruction, plan);
 }
 
-function continueThis(s, instruction) {
-  if (control.continueSession(s.id, instruction)) return `sent to ${displayName(s)}, it's on it`;
-  if (s.status === "working") return `${displayName(s)} is mid-task, so it can't take a new instruction until it stops`;
-  const started = runner.run({ cwd: s.cwd, prompt: instruction, resume: s.id });
+function continueThis(s, instruction, plan = false) {
+  // a session held open for your reply takes it in place, so it can't switch modes; ask it to plan instead
+  if (control.continueSession(s.id, plan ? `${instruction}\n\n${PLAN_FIRST}` : instruction)) return `sent to ${displayName(s)}, it's on it`;
+  if (s.status === "working" || s.status === "waiting") {
+    // it can't be interrupted, so the instruction waits and is handed over the moment it stops
+    s.queued = s.queued ? `${s.queued}\n\n${instruction}` : instruction;
+    save();
+    return `${displayName(s)} is mid-task. it gets this as soon as it stops`;
+  }
+  const started = runner.run({ cwd: s.cwd, prompt: instruction, resume: s.id, ...(plan ? { permissionMode: "plan" } : {}) });
   if (!started.ok) return `couldn't: ${started.error}`;
   return `resumed ${displayName(s)} in the background. if it's open in the desktop app, reopen it there to see the new turn`;
 }
 
-function startTask(project, task) {
+function startTask(project, task, plan = false) {
   const q = project.toLowerCase();
   const match = tracker.recentProjects(30).find((p) => p.name.toLowerCase() === q) ?? tracker.recentProjects(30).find((p) => p.name.toLowerCase().includes(q));
   if (!match) return `no project called ${project} among the recent ones`;
-  const started = runner.run({ cwd: match.cwd, prompt: task });
-  return started.ok ? `started in ${match.name}. you'll get the usual pings, and it waits for you when it's done` : `couldn't start it: ${started.error}`;
+  const started = runner.run({ cwd: match.cwd, prompt: task, ...(plan ? { permissionMode: "plan" } : {}) });
+  if (!started.ok) return `couldn't start it: ${started.error}`;
+  return plan ? `started in ${match.name}. it'll send you its plan to approve first` : `started in ${match.name}. its card shows up in a moment, and questions come as buttons`;
+}
+
+function takeQueued(sessionId) {
+  const s = sessionById(sessionId);
+  if (!s?.queued) return null;
+  const q = s.queued;
+  s.queued = null;
+  save();
+  return q;
+}
+
+function replyToSession(msg, sessionId, text) {
+  const s = sessionById(sessionId);
+  const answer = s ? continueThis(s, text) : "that session is gone from the laptop. /new starts a fresh one";
+  return tg.send(chatId(), answer, { silent: true, replyTo: msg.message_id });
+}
+
+// "fix it" under a failed command: a new session in that folder gets the command and its output
+function replyToTerminal(msg, t, text) {
+  const what = t.ok ? "finished" : `failed${t.exitCode ? ` with exit code ${t.exitCode}` : ""}`;
+  const prompt = `${text}\n\nContext: in my terminal in this folder, \`${t.command}\` ${what} after ${fmtDur(t.durationMs)}. Its last output:\n${t.output.join("\n") || "(none captured)"}`;
+  const started = runner.run({ cwd: t.cwd, prompt });
+  return tg.send(chatId(), started.ok ? "on it. its card shows up in a moment" : `couldn't start it: ${started.error}`, { silent: true, replyTo: msg.message_id });
+}
+
+// ---- your terminal: long commands finishing
+
+async function onTerminal(t) {
+  t.ok ??= true; // the shell couldn't tell: say it finished rather than claim it failed
+  state.terminal = [...(state.terminal ?? []), { command: t.command, ok: t.ok, exitCode: t.exitCode, durationMs: t.durationMs, cwd: t.cwd, at: Date.now() }].slice(-20);
+  save();
+  if (!chatId()) return;
+  const loud = !t.ok || t.durationMs >= 3 * 60_000; // short successes arrive quietly
+  const msg = await tg.send(chatId(), renderTerminal(t), { silent: hushed() || !loud, html: true });
+  const cards = { ...(state.terminalCards ?? {}), [msg.message_id]: t };
+  state.terminalCards = Object.fromEntries(Object.entries(cards).slice(-30));
+  save();
+  log(`terminal ${t.ok ? "ok" : "failed"} · ${clip(t.command, 40)}`);
+}
+
+// a few lines on what a session has done this turn, for Claudia's look_at_session
+function describeActivity(s) {
+  const a = s.transcript ? activity(readTail(s.transcript, 256 * 1024)) : null;
+  if (!a) return "";
+  const lines = [];
+  if (a.now) lines.push(`right now: ${a.now}`);
+  if (a.tests) lines.push(`latest tests: ${a.tests.failed} failed, ${a.tests.passed} passed`);
+  if (a.files.length) lines.push(`edited: ${a.files.join(", ")}`);
+  for (const e of a.events) lines.push(`- ${e.kind}${e.ok === false ? " (failed)" : ""}: ${e.text}`);
+  return lines.join("\n");
 }
 
 function onRemoteFinish({ cwd, error, needsLogin }) {
@@ -185,6 +365,14 @@ async function onUpdate(update) {
   if (!text) return tg.send(chatId(), "i can read text and photos for now");
   if (newTask?.promptId && msg.reply_to_message?.message_id === newTask.promptId) return launchNew(text);
   if (control.onReply(msg, text)) return;
+  const replied = msg.reply_to_message?.message_id;
+  if (replied && !text.startsWith("/")) {
+    // a reply to a session's card is for that session (a question about it goes to Claudia instead)
+    const sessionId = state.cards?.[replied];
+    if (sessionId && !text.trim().endsWith("?")) return replyToSession(msg, sessionId, text);
+    const t = state.terminalCards?.[replied];
+    if (t) return replyToTerminal(msg, t, text);
+  }
 
   const [first, ...rest] = text.split(/\s+/);
   const arg = rest.join(" ");
@@ -477,10 +665,14 @@ async function refreshLaptop() {
 
 const sessionById = (id) => tracker.state.sessions[id] ?? null;
 
+function doneToday() {
+  const today = localDate();
+  const done = (state.log ?? []).filter((e) => localDate(e.at) === today);
+  return { count: done.length, totalMs: done.reduce((sum, e) => sum + e.took * 1000, 0) };
+}
+
 const appApi = {
   async state() {
-    const today = localDate();
-    const done = (state.log ?? []).filter((e) => localDate(e.at) === today);
     return {
       now: Date.now(),
       name: config.name,
@@ -488,7 +680,8 @@ const appApi = {
       muted: muted(),
       sessions: tracker.snapshot(),
       holds: control.list(),
-      doneToday: { count: done.length, totalMs: done.reduce((sum, e) => sum + e.took * 1000, 0) },
+      doneToday: doneToday(),
+      terminal: (state.terminal ?? []).slice(-6).reverse(),
       laptop: { ...laptopInfo, awakeUntil: laptop.keepAwakeUntil() },
       projects: tracker.recentProjects(12),
       recipes: loadRecipes().map(({ key, label, prompt }) => ({ key, label, prompt })),
@@ -500,6 +693,7 @@ const appApi = {
     return {
       ...tracker.snapshot().find((x) => x.id === id),
       timeline: timeline(readTail(s.transcript)),
+      activity: s.transcript ? activity(readTail(s.transcript, 256 * 1024)) : null,
       hold: control.list().find((h) => h.sessionId === id && h.kind === "stop")?.id ?? null,
     };
   },
@@ -625,9 +819,19 @@ const server = createServer((req, res) => {
         return;
       case "/decide": {
         // hooks that can carry an answer back: registered before the event is tracked, so a "done" ping can attach to it
-        const answer = ev ? control.decide(ev) : Promise.resolve({});
+        // an instruction you sent while it was working is handed over now, so it keeps going
+        const queued = ev?.hook_event_name === "Stop" ? takeQueued(ev.session_id) : null;
+        const answer = queued ? Promise.resolve({ decision: "block", reason: `${config.name} replied from Telegram: ${queued}` }) : ev ? control.decide(ev) : Promise.resolve({});
         if (ev) enqueue(ev);
+        // its "done" card goes out first, then the new turn starts like any other
+        if (queued) enqueue({ hook_event_name: "UserPromptSubmit", session_id: ev.session_id, cwd: ev.cwd, transcript_path: ev.transcript_path, prompt: queued, claudia_remote: true });
         return reply(200, await answer);
+      }
+      case "/terminal": {
+        reply(200);
+        const t = parseTerminalEvent(ev);
+        if (t) onTerminal(t).catch((err) => log("terminal:", err));
+        return;
       }
       case "/status":
         return reply(200, { text: tracker.describe(), muted: muted(), away: control.away() });

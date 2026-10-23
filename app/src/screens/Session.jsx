@@ -26,6 +26,9 @@ export function Session({ id, data, back }) {
       .catch(() => {});
   useEffect(() => {
     refresh();
+    if (s?.status !== "working") return;
+    const t = setInterval(refresh, 10_000); // follow along while it works
+    return () => clearInterval(t);
   }, [id, s?.status, s?.lastEventAt, data.holds.length]);
   useEffect(() => () => guardTyping(false), []);
 
@@ -129,15 +132,19 @@ export function Session({ id, data, back }) {
             </m.div>
           ))}
         </AnimatePresence>
+        {detail?.activity && <Activity a={detail.activity} working={r.kind === "working"} />}
         {ask && <NeedsYouCard item={{ key: ask.id, hold: ask, sessionId: id }} session={s} recipes={recipes} />}
         <div ref={bottom} />
       </m.div>
 
       <div style={{ marginTop: "auto", paddingTop: 24, display: "flex", flexDirection: "column", gap: 14 }}>
         {r.kind === "working" ? (
-          <div className="meta" style={{ textAlign: "center" }}>
-            it's mid-task. you can reply as soon as it stops.
-          </div>
+          <>
+            <Composer value={text} onChange={(v) => (setText(v), guardTyping(Boolean(v.trim())))} onSend={reply} />
+            <div className="meta" style={{ textAlign: "center" }}>
+              it's mid-task. it gets this as soon as it stops
+            </div>
+          </>
         ) : (
           <>
             <div style={{ display: "flex", alignItems: "flex-end", gap: 6, paddingLeft: 4 }}>
@@ -165,6 +172,29 @@ export function Session({ id, data, back }) {
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+// what this turn has done so far, from the session's log: the current step, tests, edited files
+function Activity({ a, working }) {
+  const files = a.files ?? [];
+  if (!(working && a.now) && !a.tests && !files.length) return null;
+  return (
+    <div className="meta" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      {working && a.now && <span style={{ color: "var(--color-text)" }}>▸ {a.now}</span>}
+      {a.tests && (
+        <span style={{ color: a.tests.failed ? "var(--color-danger)" : undefined }}>
+          tests: {a.tests.failed ? `${a.tests.failed} failed, ` : ""}
+          {a.tests.passed} passed
+        </span>
+      )}
+      {files.length > 0 && (
+        <span>
+          edited {files.slice(0, 4).join(", ")}
+          {files.length > 4 ? ` +${files.length - 4}` : ""}
+        </span>
+      )}
     </div>
   );
 }

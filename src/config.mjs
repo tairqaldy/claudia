@@ -26,6 +26,7 @@ const DEFAULTS = {
   learnHabits: true, // suggest shortcuts for things you keep asking for
   autoKeepAwake: true, // keep the laptop awake while you're away and sessions are working
   miniApp: true, // the Telegram Mini App, served through a Cloudflare quick tunnel
+  terminalSeconds: 60, // with `claudia terminal on`, terminal commands that ran this long ping you (rerun it after changing this)
 };
 
 export function readJson(path, fallback) {

@@ -2,6 +2,7 @@
 // Telegram, and its questions, plan approvals and permission prompts become buttons.
 // At the laptop nothing ever waits: every hook gets an empty answer right away.
 import { randomBytes } from "node:crypto";
+import { esc } from "./cards.mjs";
 import { displayName } from "./sessions.mjs";
 import { clip } from "./util.mjs";
 
@@ -58,7 +59,8 @@ export function createControl({ state, save, tg, config, tracker, recipes, log =
     h.resolve(output);
     onChange();
     for (const m of h.messages) {
-      if (note && h.texts[m]) tg.edit(chat(), m, `${h.texts[m]}\n\n${note}`);
+      // cards are HTML (see cards.mjs); question and plan messages are plain text
+      if (note && h.texts[m]) tg.edit(chat(), m, `${h.texts[m]}\n\n${h.html?.[m] ? esc(note) : note}`, undefined, { html: Boolean(h.html?.[m]) });
       else tg.setButtons(chat(), m);
     }
   }
@@ -75,9 +77,10 @@ export function createControl({ state, save, tg, config, tracker, recipes, log =
   const stopHold = (sessionId) =>
     [...holds.values()].find((h) => h.kind === "stop" && h.sessionId === sessionId && !h.messages.length) ?? null;
 
-  function attach(h, messageId, text) {
+  function attach(h, messageId, text, html = false) {
     h.messages.push(messageId);
     h.texts[messageId] = text;
+    if (html) (h.html ??= {})[messageId] = true;
   }
 
   function stopButtons(h, all = false) {

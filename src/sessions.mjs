@@ -47,7 +47,7 @@ export class Tracker {
         break;
       case "Notification":
         if (needsYou(ev)) this.waitFor(s, ev.message, true);
-        else if (ev.notification_type === "quota_auto_resume_fired") await this.notify("resumed", s, {});
+        else if (ev.notification_type === "quota_auto_resume_fired") await this.notify("resumed", s, { replyTo: s.startMsgId });
         break;
       case "Stop":
         await this.finish(s, ev);
@@ -102,10 +102,13 @@ export class Tracker {
       turnStart: this.now(),
       startMsgId: null,
       announced: false,
+      asked: false,
+      step: null,
       waitingFor: null,
     });
     const turn = s.turn;
-    this.after(s, "start", this.quietMs, () => {
+    // work you started from your phone shows up right away; your own laptop turns only once they run a while
+    this.after(s, "start", remote ? 1500 : this.quietMs, () => {
       const ping = this.announce(s, turn);
       this.inflight.set(s.id, ping);
       return ping.finally(() => this.inflight.delete(s.id));
@@ -139,7 +142,9 @@ export class Tracker {
       if (s.turn !== turn || s.status !== "waiting" || s.waitingSince !== since) return;
       // permission prompts have no "answered" event; if the transcript moved on, it was answered
       if (checkActivity && this.transcripts.activity(s.transcript) > since + 3000) return;
-      await this.notify("ask", s, { replyTo: s.startMsgId });
+      const res = await this.notify("ask", s, { replyTo: s.startMsgId });
+      // the "needs you" card takes the task's place in the chat; "done" will replace it in turn
+      if (res?.messageId) Object.assign(s, { startMsgId: res.messageId, announced: true, asked: true });
     });
   }
 
@@ -148,6 +153,11 @@ export class Tracker {
     if (s.status === "waiting") {
       s.status = "working";
       s.waitingFor = null;
+    }
+    if (s.asked) {
+      // answered: its card goes back to "working"
+      s.asked = false;
+      Promise.resolve(this.notify("working", s, { replyTo: s.startMsgId })).catch(this.onError);
     }
   }
 

@@ -27,6 +27,10 @@ const state = {
     },
   ],
   doneToday: { count: 3, totalMs: 72 * MIN },
+  terminal: [
+    { command: "npm run build", ok: false, exitCode: 1, durationMs: 3 * MIN + 12_000, cwd: "C:/code/qn5", at: now - 6 * MIN },
+    { command: "pnpm test", ok: true, exitCode: 0, durationMs: 2 * MIN, cwd: "C:/code/finow", at: now - 40 * MIN },
+  ],
   laptop: { battery: { percent: 86, charging: false, onBattery: false }, cpu: 31, mem: { usedPct: 47, totalGb: 47.7 }, awakeUntil: now + 95 * MIN },
   projects: [
     { cwd: "C:/code/qn5", name: "qn5", lastSeen: now - 2 * MIN },
@@ -64,6 +68,7 @@ export const mockApi = {
     return {
       ...s,
       hold: id === "c" ? "stop1" : null,
+      activity: { now: "running npm test", tests: { passed: 40, failed: 2, at: Date.now() }, files: ["checkout.test.ts", "stripe-mock.ts"], events: [], counts: { commands: 20, edits: 3, reads: 9 } },
       timeline: [
         { type: "you", text: s.prompt },
         { type: "activity", text: "ran 20 commands · edited 3 files" },

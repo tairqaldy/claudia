@@ -10,26 +10,27 @@ const DAY_MS = 24 * 3_600_000;
 
 const PING_RULES = {
   hello: `You were just connected to their Telegram. Say hi in two or three short lines: who you are, that you'll text when a session starts something long, finishes or needs them, and that they can text you any time (/status gives a quick look).`,
-  start: `A session has been working for a bit, and you're letting them know it's on it. Name the project and say in a few plain words what it's doing, based on the task. If a usual time is given, add it, like "usually ~12m here". One line. It arrives silently.
-Also give the task a label of 2 to 5 lowercase words, without the project name.`,
-  done: `A session just stopped. Read its final message and lead with exactly one of: "done" (finished, nothing needed), "needs you" (it asked a question or wants a decision, review or approval), or "stuck" (it hit a problem). Then give the gist in a few plain words, plus what they have to do, if anything. End with how long it took, like "took 14m". Two short lines at most, under 250 characters. No code, and no file paths unless they matter.`,
-  ask: `A session is blocked until they answer. Start with the project and that it needs them, then the question or permission in a few words. One or two lines.`,
-  long: `A task is running longer than usual. Say so calmly in one line, with how long it's been and the usual time if one is given.`,
-  failed: `A session stopped because of an error, not because it finished. Say which session, that it hit an error, and what the error was in plain words. If it looks like a usage limit, say so. One or two lines.`,
-  paused: `A session's turn ended, but work it started in the background is still running, so it isn't done. Lead with "paused", then say what's still running and what it did so far in a few words. You'll ping again when it finishes. Two short lines at most.`,
-  resumed: `Their usage limits just reset and the session picked its work back up by itself. One short, light line.`,
   digest: `Write their daily digest: what got finished since yesterday (grouped by project, with rough total time), what's still running or waiting on them, and one useful observation if there is one (a project eating lots of time, something waiting for days). If almost nothing happened, keep it to one friendly line. At most 6 short lines, plain text, no headers.`,
+};
+
+const CARD_RULES = `You're filling in a status card on their phone. The card already shows the session's name, an icon for its state, and how long it took, so never repeat those. "gist" is ONE plain sentence, at most 160 characters: what happened, and what they need to do if anything. No greetings, no code, no file paths unless they matter. "label" is 2 to 5 lowercase words naming the task, without the project name.`;
+
+const SUMMARY_RULES = {
+  start: `The session just started working on the task below. gist: a few words on what it's doing. verdict: "done".`,
+  done: `The session just stopped. Read its final message. verdict: "done" if it finished and nothing's needed, "needs" if it asked a question or wants a decision, review or approval, "stuck" if it hit a problem it couldn't get past. gist: the outcome, plus what they have to do if anything.`,
+  failed: `The session stopped because of an error. gist: the error in plain words; if it's a usage limit, say so and when it resets if known. verdict: "stuck".`,
+  paused: `The turn ended but work it started in the background is still running. gist: what's still running and what it did so far. verdict: "done".`,
+};
+
+const SUMMARY = {
+  type: "object",
+  properties: { verdict: { type: "string", enum: ["done", "needs", "stuck"] }, gist: { type: "string" }, label: { type: "string" } },
+  required: ["verdict", "gist", "label"],
+  additionalProperties: false,
 };
 
 // how to refer to sessions, shared by every ping
 const NAMING = `Refer to a session by its title when there is one; folder names like scratch-2026-10-15-fe816a mean nothing to a person.`;
-
-const LABELLED = {
-  type: "object",
-  properties: { label: { type: "string" }, text: { type: "string" } },
-  required: ["label", "text"],
-  additionalProperties: false,
-};
 
 const TOOLS = [
   {
@@ -71,12 +72,13 @@ const TOOLS = [
   {
     name: "continue_session",
     description:
-      "Give a session on the laptop its next instruction, like 'tell qn5 to commit and push'. Only when they clearly ask for it. Works for a session that's waiting for their reply or idle, not one that's mid-task.",
+      "Give a session on the laptop its next instruction, like 'tell qn5 to commit and push' or 'have it run the tests again'. Only when they clearly ask for it. Works for a session that's waiting for their reply or idle, not one that's mid-task.",
     input_schema: {
       type: "object",
       properties: {
         session: { type: "string", description: "Session title or project name from the sessions list." },
         instruction: { type: "string", description: "What the session should do, in their words." },
+        mode: { type: "string", enum: ["do", "plan"], description: "plan: it only plans and sends the plan to their phone for approval first." },
       },
       required: ["session", "instruction"],
       additionalProperties: false,
@@ -85,12 +87,13 @@ const TOOLS = [
   {
     name: "start_task",
     description:
-      "Start a new Claude Code session in one of their project folders, running on the laptop. Only when they clearly ask for new work to be started.",
+      "Start a new Claude Code session in one of their project folders, running on the laptop. It can do anything they'd ask Claude Code to do there: install packages, run and fix tests, build or change features, refactor, review, design with their tools, deploy. Its questions, plans and risky commands come to their phone as buttons. Only when they clearly ask for new work to be started.",
     input_schema: {
       type: "object",
       properties: {
         project: { type: "string", description: "Project name from the list of projects you can start work in." },
-        task: { type: "string", description: "The full task for the new session, in their words." },
+        task: { type: "string", description: "The full task for the new session, in their words, plus any context from this chat it needs (an error from their terminal, say)." },
+        mode: { type: "string", enum: ["do", "plan"], description: "plan: when they want to see a plan first. It plans, then the plan comes to their phone to approve or change." },
       },
       required: ["project", "task"],
       additionalProperties: false,
@@ -156,20 +159,48 @@ export function createBrain({ config, memory, tracker, prefs, actions, onError =
       const res = await client.messages.create({
         model: config.model,
         max_tokens: 1024,
-        output_config: { effort: "low", ...(kind === "start" ? { format: { type: "json_schema", schema: LABELLED } } : {}) },
+        output_config: { effort: "low" },
         system,
         messages: [{ role: "user", content: facts(kind, session, extra, config) }],
       });
       const text = textOf(res);
       if (res.stop_reason === "refusal" || !text) return { text: template(kind, session, extra, config) };
-      if (kind === "start") {
-        const parsed = JSON.parse(text);
-        return { text: parsed.text, label: clip(parsed.label, 40) };
-      }
       return { text };
     } catch (err) {
       onError(err);
       return { text: template(kind, session, extra, config) };
+    }
+  }
+
+  // The words on a status card: a verdict, one sentence of gist, and a short label for the task.
+  // The card itself (icon, name, time) is laid out in code, so this never repeats those.
+  async function summarize(kind, session, extra = {}) {
+    const fallback = summaryTemplate(kind, session, extra);
+    if (!client) return fallback;
+    try {
+      const system = [
+        persona,
+        `## your notes\n${notes()}`,
+        `## what you're writing\n${CARD_RULES}\n${SUMMARY_RULES[kind]}`,
+      ].join("\n\n");
+      const res = await client.messages.create({
+        model: config.model,
+        max_tokens: 600,
+        output_config: { effort: "low", format: { type: "json_schema", schema: SUMMARY } },
+        system,
+        messages: [{ role: "user", content: facts(kind, session, extra, config) }],
+      });
+      const text = textOf(res);
+      if (res.stop_reason === "refusal" || !text) return fallback;
+      const out = JSON.parse(text);
+      return {
+        verdict: kind === "done" ? out.verdict : kind === "failed" ? "stuck" : kind === "paused" ? "paused" : "done",
+        gist: clip(out.gist, 300),
+        label: clip(out.label, 40) || null,
+      };
+    } catch (err) {
+      onError(err);
+      return fallback;
     }
   }
 
@@ -184,6 +215,8 @@ export function createBrain({ config, memory, tracker, prefs, actions, onError =
       `## sound\n${quiet ? `quiet hours ${quiet.from}–${quiet.to}: pings arrive silently then` : "no quiet hours set"}${prefs.mutedUntil() > Date.now() ? `; muted for now` : ""}`,
       `## away mode\n${actions.away() ? "on: finished sessions wait for their reply here, questions and permissions come as buttons" : "off: they're at the laptop, nothing waits on them"}`,
       `## projects you can start work in\n${actions.projects().join(", ") || "(none seen yet)"}`,
+      `## long commands they ran in their terminal lately\n${actions.terminal() || "(none)"}`,
+      `## acting for them\nYou can do on the laptop whatever they'd do with Claude Code: start_task for new work in a project, continue_session for the next step in an existing session, look_at_session to see what a session is doing right now. When they reply to one of your cards about a session, that's usually an instruction for that session. Say plainly what you started; don't promise results you haven't seen.`,
     ].join("\n\n");
     const content = [
       ...images.map((data) => ({ type: "image", source: { type: "base64", media_type: "image/jpeg", data } })),
@@ -217,9 +250,9 @@ export function createBrain({ config, memory, tracker, prefs, actions, onError =
         actions.setAway(Boolean(input.on));
         return input.on ? "away mode is on" : "away mode is off";
       case "continue_session":
-        return actions.continueSession(String(input.session ?? ""), String(input.instruction ?? ""));
+        return actions.continueSession(String(input.session ?? ""), String(input.instruction ?? ""), input.mode === "plan");
       case "start_task":
-        return actions.startTask(String(input.project ?? ""), String(input.task ?? ""));
+        return actions.startTask(String(input.project ?? ""), String(input.task ?? ""), input.mode === "plan");
       case "remember": {
         const note = memory.remember(String(input.note ?? ""));
         return note ? `saved as #${note.id}` : "nothing to save";
@@ -241,7 +274,13 @@ export function createBrain({ config, memory, tracker, prefs, actions, onError =
         const s = tracker.find(input.project);
         if (!s) return "no session like that in the last day";
         const said = lastAssistantText(readTail(s.transcript)) || s.lastDone?.summary || "(nothing yet)";
-        return [`project: ${s.project}`, `status: ${s.status}`, `task: ${clip(s.prompt, 2000) || "(unknown)"}`, `latest message:\n${clip(said, 4000)}`].join("\n");
+        return [
+          `project: ${s.project}`,
+          `status: ${s.status}`,
+          `task: ${clip(s.prompt, 2000) || "(unknown)"}`,
+          `this turn so far:\n${actions.sessionActivity(s) || "(nothing recorded)"}`,
+          `latest message:\n${clip(said, 4000)}`,
+        ].join("\n");
       }
       default:
         return `unknown tool ${name}`;
@@ -283,7 +322,7 @@ export function createBrain({ config, memory, tracker, prefs, actions, onError =
     }
   }
 
-  return { ping, reply, suggestShortcut };
+  return { ping, summarize, reply, suggestShortcut };
 }
 
 // What to tell them when the chat call itself fails.
@@ -326,30 +365,15 @@ function facts(kind, s, x, config) {
   return lines.join("\n");
 }
 
+function summaryTemplate(kind, s, x) {
+  const firstLine = clip((x.finalText ?? "").split("\n").find((l) => l.trim()) ?? "", 200);
+  if (kind === "failed") return { verdict: "stuck", gist: x.error ?? "an API error", label: null };
+  if (kind === "paused") return { verdict: "paused", gist: `still running: ${(x.background ?? []).join(", ")}`, label: null };
+  return { verdict: "done", gist: kind === "done" ? firstLine : "", label: null };
+}
+
+// when the API is unreachable: the hello and the digest still go out, plainly
 function template(kind, s, x, config) {
-  const name = s.project ? displayName(s) : "";
-  const usual = x.usually ? `, usually ~${fmtDur(x.usually)}` : "";
-  switch (kind) {
-    case "hello":
-      return `hi ${config.name}, it's claudia. i'll text you when a claude code session starts something long, finishes, or needs you. text me any time, /status for a quick look`;
-    case "start":
-      return `on it · ${name}${usual}`;
-    case "done": {
-      const gist = clip((x.finalText ?? "").split("\n").find((l) => l.trim()) ?? "", 200);
-      return [`done · ${name}${x.took ? ` · took ${fmtDur(x.took)}` : ""}`, gist].filter(Boolean).join("\n");
-    }
-    case "ask":
-      return `${name} needs you: ${s.waitingFor}`;
-    case "long":
-      return `still going · ${name} · ${fmtDur(x.elapsed ?? 0)} in${usual}`;
-    case "failed":
-      return `${name} hit an error: ${x.error}`;
-    case "paused":
-      return `paused · ${name}, still running: ${x.background.join(", ")}`;
-    case "resumed":
-      return `limits reset, ${name} picked back up`;
-    case "digest":
-      return x.facts;
-  }
-  return name;
+  if (kind === "hello") return `hi ${config.name}, it's claudia. every task gets one card here: quiet while it works, a sound when it's done or needs you. text me any time, /status for a quick look`;
+  return x.facts ?? "";
 }

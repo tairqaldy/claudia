@@ -3,8 +3,8 @@ import { AnimatePresence, m } from "motion/react";
 import { useEffect, useState } from "react";
 import { api } from "../api.js";
 import { confirmIdentity, haptic } from "../tg.js";
-import { BackLink, Heart, Icon, Pill, Skeleton, Toggle, dur, ease, slide, useToast } from "../ui.jsx";
-import { timeOfDay } from "../util.js";
+import { BackLink, Heart, Icon, Pill, Skeleton, StatusPill, Toggle, dur, ease, slide, useToast } from "../ui.jsx";
+import { fmtAgo, fmtDur, timeOfDay } from "../util.js";
 
 export function Laptop({ data, back }) {
   const toast = useToast();
@@ -120,6 +120,27 @@ export function Laptop({ data, back }) {
         </AnimatePresence>
         {procs && !procs.length && <div className="meta" style={{ padding: "14px 0" }}>no leftover node processes. nice and tidy.</div>}
       </div>
+
+      {data.terminal?.length > 0 && (
+        <div style={{ paddingTop: 22 }}>
+          <div className="section" style={{ paddingBottom: 2 }}>
+            long commands
+          </div>
+          {data.terminal.map((t) => (
+            <div key={t.at + t.command} className="row" style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+              <span style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 2 }}>
+                <span className="mono" style={{ fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {t.command}
+                </span>
+                <span className="meta">
+                  {t.cwd?.split(/[\\/]/).filter(Boolean).pop()} · {fmtDur(t.durationMs)} · {fmtAgo(Date.now() - t.at)}
+                </span>
+              </span>
+              <StatusPill kind={t.ok ? "done" : "failed"} />
+            </div>
+          ))}
+        </div>
+      )}
 
       <div style={{ marginTop: "auto", paddingTop: 22, display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
         <Pill main icon={Icon.camera} busyLabel="taking it" doneLabel="sent" onClick={() => api.act("laptop", { action: "shot" }).then((r) => toast(r.message ?? "sent to your chat"))}>

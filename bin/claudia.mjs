@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// claudia setup | start | stop | restart | status | test | logs | hooks on|off | autostart on|off | uninstall
+// claudia setup | start | stop | restart | status | test | logs | hooks on|off | autostart on|off | terminal on|off|status | uninstall
 import Anthropic from "@anthropic-ai/sdk";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -17,6 +17,7 @@ import {
   removeHooks,
 } from "../src/install.mjs";
 import { createTelegram } from "../src/telegram.mjs";
+import { installTerminalHook, removeTerminalHook, terminalHookStatus } from "../src/terminal.mjs";
 import { sleep } from "../src/util.mjs";
 
 const [command = "help", ...rest] = process.argv.slice(2);
@@ -104,12 +105,36 @@ function autostart() {
   console.log(`autostart on: ${enableAutostart()}`);
 }
 
+// Pings when a long command you ran yourself in a terminal finishes (PowerShell, zsh, bash).
+function terminal() {
+  const cfg = loadConfig();
+  if (positional[0] === "on") {
+    const { changed, unchanged, skipped } = installTerminalHook({ port: cfg.port, minSeconds: cfg.terminalSeconds });
+    for (const file of changed) console.log(`terminal hook added to ${file}`);
+    for (const file of unchanged) console.log(`already there: ${file}`);
+    for (const { path, reason } of skipped) console.log(`skipped ${path}: ${reason}`);
+    if (changed.length || unchanged.length)
+      console.log(`open a new terminal. commands that run ${cfg.terminalSeconds}s or longer will ping you when they finish.`);
+    return;
+  }
+  if (positional[0] === "off") {
+    const changed = removeTerminalHook();
+    for (const file of changed) console.log(`terminal hook removed from ${file}`);
+    return console.log(changed.length ? "open a new terminal for it to take effect" : "the terminal hook wasn't on");
+  }
+  for (const { path, installed, blocked } of terminalHookStatus())
+    console.log(`${installed ? "on " : "off"}  ${path}${blocked ? `\n     ${blocked}` : ""}`);
+  console.log(`threshold: ${cfg.terminalSeconds}s · turn on/off: node bin/claudia.mjs terminal on|off`);
+}
+
 async function uninstall() {
   await stop();
   removeHooks();
   disableAutostart();
+  const terminalFiles = removeTerminalHook();
+  const what = terminalFiles.length ? "hooks, terminal hook, autostart" : "hooks and autostart";
   if (flags.purge) rmSync(HOME, { recursive: true, force: true });
-  console.log(flags.purge ? `removed hooks, autostart and ${HOME}` : `removed hooks and autostart. her memory and keys are still in ${HOME} (add --purge to delete)`);
+  console.log(flags.purge ? `removed ${what} and ${HOME}` : `removed ${what}. her memory and keys are still in ${HOME} (add --purge to delete)`);
 }
 
 async function setup() {
@@ -202,8 +227,11 @@ function help() {
   node bin/claudia.mjs test              send a test ping
   node bin/claudia.mjs hooks on|off      add or remove the claude code hooks
   node bin/claudia.mjs autostart on|off  start at login or not
+  node bin/claudia.mjs terminal on|off|status
+                                         ping when a terminal command you ran takes
+                                         60s+ (terminalSeconds) and finishes
   node bin/claudia.mjs uninstall [--purge]`);
 }
 
-const commands = { setup, start, stop, restart: async () => (await stop(), start()), status, test, logs, hooks, autostart, uninstall, help };
+const commands = { setup, start, stop, restart: async () => (await stop(), start()), status, test, logs, hooks, autostart, terminal, uninstall, help };
 await (commands[command] ?? help)();

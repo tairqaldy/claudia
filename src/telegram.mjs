@@ -28,27 +28,43 @@ export function createTelegram(token) {
     call,
     me: () => call("getMe"),
 
-    // markup: inline buttons ({ inline_keyboard }) or { force_reply: true } to prompt for an answer
-    send(chatId, text, { silent = false, replyTo = null, markup = null } = {}) {
+    // markup: inline buttons ({ inline_keyboard }) or { force_reply: true } to prompt for an answer.
+    // html: the text uses Telegram's HTML tags (<b>, <i>, <pre>); escape anything else with esc().
+    send(chatId, text, { silent = false, replyTo = null, markup = null, html = false } = {}) {
       return call("sendMessage", {
         chat_id: chatId,
         text: clip(text, 4000),
         disable_notification: silent,
+        ...(html ? { parse_mode: "HTML" } : {}),
         link_preview_options: { is_disabled: true },
         ...(replyTo ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } } : {}),
         ...(markup ? { reply_markup: markup } : {}),
       });
     },
 
-    edit(chatId, messageId, text, markup = { inline_keyboard: [] }) {
+    edit(chatId, messageId, text, markup = { inline_keyboard: [] }, { html = false } = {}) {
       return call("editMessageText", {
         chat_id: chatId,
         message_id: messageId,
         text: clip(text, 4000),
         link_preview_options: { is_disabled: true },
         reply_markup: markup,
+        ...(html ? { parse_mode: "HTML" } : {}),
       }).catch(() => {});
     },
+
+    // like edit, but reports whether the message still exists (false: deleted, too old, or gone)
+    async update(chatId, messageId, text, markup = { inline_keyboard: [] }) {
+      try {
+        await call("editMessageText", { chat_id: chatId, message_id: messageId, text: clip(text, 4000), parse_mode: "HTML", link_preview_options: { is_disabled: true }, reply_markup: markup });
+        return true;
+      } catch (err) {
+        return /not modified/i.test(err.message);
+      }
+    },
+
+    remove: (chatId, messageId) => call("deleteMessage", { chat_id: chatId, message_id: messageId }).catch(() => {}),
+    pin: (chatId, messageId) => call("pinChatMessage", { chat_id: chatId, message_id: messageId, disable_notification: true }).catch(() => {}),
 
     setButtons: (chatId, messageId, markup = { inline_keyboard: [] }) =>
       call("editMessageReplyMarkup", { chat_id: chatId, message_id: messageId, reply_markup: markup }).catch(() => {}),
